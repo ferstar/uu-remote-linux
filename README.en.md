@@ -356,7 +356,7 @@ A value other than `auto` beats `UU_VIDEO_ENCODER` / `UU_VIDEO_CODEC`; `auto` or
 field falls through to the environment, then to auto (NVENC then CPU when an NVIDIA driver
 is loaded; CPU with no probe when it is not; codec stays H.265 on hardware and H.264 on CPU).
 The probe runs in the background at startup and does not delay the first picture. They take
-effect the next time a desktop connection starts. Explicit `vaapi` with 真彩 stays on VAAPI,
+`set-encoder` and `set-codec` both send `SIGUSR2` to the host in `host.pid` when that process is this program. An encoder change switches each live desktop stream without disconnecting and keeps the codec negotiated for that session. A failed start follows the existing fallback (in-process, then the FFmpeg process, then CPU). After a hand edit, `kill -USR2 $(cat ~/.config/uuremote/host.pid)` does the same. `SIGUSR2` does not re-probe. A codec change takes effect the next time a desktop connection starts; the running host only logs it. Explicit `vaapi` with 真彩 stays on VAAPI,
 encodes 4:2:0, and reports chroma 4:2:0 in CaptureSettingSync field 3. If the chosen encoder
 cannot start, the stream falls back to CPU and logs a warning. VAAPI is not an auto candidate
 until #33.
