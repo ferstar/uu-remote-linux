@@ -225,6 +225,8 @@ cargo build --release --features wayland,portal   # + GNOME/KDE Wayland
 GNOME/KDE Wayland 的进程内编码用 `cargo build --release --features wayland,portal,inproc-av` 配合 `set-encoder vaapi` 启用，目前仅支持 Portal + VAAPI。
 `UU_PORTAL_DMABUF=0` 禁用 DMA-BUF、改用进程内上传；`UU_VIDEO_PIPELINE=process` 恢复外部 FFmpeg 管线。
 
+CPU H.264 默认 GOP 为 0.5 秒；`UU_VIDEO_GOP_SECONDS=2` 可选择 2 秒以减少关键帧开销，但可能延长丢包恢复等待。该变量覆盖所有编码路径，接受大于 0 且不超过 10 的有限秒数，非法值使用各路径默认值。
+
 ### 3. 登录
 
 在图形桌面里运行：

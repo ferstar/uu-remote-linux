@@ -247,6 +247,8 @@ The host's optional `--features inproc-av` provides in-process encoding on X11. 
 On GNOME/KDE Wayland, enable in-process encoding with `cargo build --release --features wayland,portal,inproc-av` and `set-encoder vaapi`; support is limited to Portal + VAAPI.
 `UU_PORTAL_DMABUF=0` disables DMA-BUF in favor of in-process host upload; `UU_VIDEO_PIPELINE=process` restores external FFmpeg pipelines.
 
+CPU H.264 defaults to a 0.5-second GOP; `UU_VIDEO_GOP_SECONDS=2` selects 2 seconds to reduce keyframe overhead, with potentially slower packet-loss recovery. This variable overrides all encoder paths, accepts finite seconds greater than 0 and at most 10, and uses each path’s default for invalid values.
+
 ### 3. Log in
 
 Run inside your graphical session:
