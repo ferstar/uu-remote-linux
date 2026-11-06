@@ -292,6 +292,7 @@ fn x264c_error(code: libc::c_int) -> &'static str {
 /// One produced I420 frame waiting for the encoder thread.
 struct QueuedFrame {
     planes: Planes,
+    is_new: bool,
     force_idr: libc::c_int,
     permit: OwnedSemaphorePermit,
     /// Capture start → encoder finished, for the latency statistic (monotonic Instants only).
@@ -322,11 +323,12 @@ impl FrameQueue {
         Self { state: std::sync::Mutex::new((None, false)), cv: std::sync::Condvar::new() }
     }
 
-    fn push(&self, frame: QueuedFrame) -> PushOutcome {
+    fn push(&self, mut frame: QueuedFrame) -> PushOutcome {
         let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
         if state.1 {
             return PushOutcome::Closed(frame);
         }
+        if let Some(old) = &state.0 { frame.is_new |= old.is_new; }
         let old = state.0.replace(frame);
         drop(state);
         self.cv.notify_one();
@@ -581,7 +583,7 @@ fn produce_x264_inner(
         }
         let convert_us = elapsed_us(convert_started);
 
-        let frame = QueuedFrame { planes, force_idr, permit, captured_at, capture_us, convert_us };
+        let frame = QueuedFrame { planes, is_new: dirty, force_idr, permit, captured_at, capture_us, convert_us };
         match queue.push(frame) {
             PushOutcome::Stored(old) => {
                 if let Some(old) = old {
@@ -682,7 +684,7 @@ fn encode_x264_inner(
                 latencies.clear();
             }
             if units
-                .blocking_send(EncodedUnit { data, permit: frame.permit, completed_at })
+                .blocking_send(EncodedUnit { data, permit: frame.permit, completed_at, is_new: frame.is_new })
                 .is_err()
             {
                 return Ok(());
@@ -1628,7 +1630,18 @@ mod pipeline_tests {
 
     fn frame(planes: Planes, sem: &Arc<Semaphore>) -> QueuedFrame {
         let permit = sem.clone().try_acquire_owned().expect("permit");
-        QueuedFrame { planes, force_idr: 0, permit, captured_at: Instant::now(), capture_us: 0, convert_us: 0 }
+        QueuedFrame { planes, is_new: true, force_idr: 0, permit, captured_at: Instant::now(), capture_us: 0, convert_us: 0 }
+    }
+
+    #[test]
+    fn replaced_dirty_frame_keeps_new_frame_marker() {
+        let queue = FrameQueue::new();
+        let sem = Arc::new(Semaphore::new(2));
+        assert!(matches!(queue.push(frame(Planes::new(2, 2), &sem)), PushOutcome::Stored(None)));
+        let mut keepalive = frame(Planes::new(2, 2), &sem);
+        keepalive.is_new = false;
+        assert!(matches!(queue.push(keepalive), PushOutcome::Stored(Some(_))));
+        assert!(queue.take().unwrap().is_new);
     }
 
     #[test]
@@ -1965,7 +1978,7 @@ fn run_wayland_vaapi(
         let mut encoded = false;
         if let Some(data) = packet {
             if !data.is_empty() {
-                if units.blocking_send(EncodedUnit {data,permit,completed_at:Instant::now()}).is_err() { return Ok(()); }
+                if units.blocking_send(EncodedUnit {data,permit,completed_at:Instant::now(),is_new:captured}).is_err() { return Ok(()); }
                 pacing.sent(Instant::now());
                 encoded = true;
             }
