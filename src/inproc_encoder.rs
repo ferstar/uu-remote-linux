@@ -1930,6 +1930,7 @@ fn run_wayland_vaapi(
     config: &Config, engine: &SafeVaapiEngine, units: mpsc::Sender<EncodedUnit>,
     stop: Arc<AtomicBool>, idr: Arc<AtomicBool>, budget: Arc<Semaphore>,
 ) -> Result<(), String> {
+    let handle = tokio::runtime::Handle::current();
     let _capture = crate::wayland::DmaCaptureGuard::acquire()?;
     let dynamic = std::env::var("UU_WAYLAND_DYNAMIC_FPS").as_deref() != Ok("0");
     let mut schedule = crate::wayland::pacing::CaptureSchedule::new(Instant::now(), config.fps);
@@ -1941,7 +1942,7 @@ fn run_wayland_vaapi(
             if stop.load(Ordering::Relaxed) || units.is_closed() { return Ok(()); }
             std::thread::sleep(schedule.deadline().saturating_duration_since(Instant::now()).min(Duration::from_millis(10)));
         }
-        let Some(permit) = acquire(&budget, &units) else { return Ok(()); };
+        let Some(permit) = acquire(&budget, &units, &handle) else { return Ok(()); };
         let mut packet = None;
         let captured = crate::wayland::capture_dmabuf(pacing.wait_for_damage(), |frame| {
             if (frame.width,frame.height) != config.input { return Err("Wayland DMA-BUF size changed".into()); }
