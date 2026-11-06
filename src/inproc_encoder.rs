@@ -236,6 +236,7 @@ pub struct EncodedUnit {
     pub data: Vec<u8>,
     pub permit: OwnedSemaphorePermit,
     pub completed_at: Instant,
+    pub is_new: bool,
 }
 
 fn acquire(
@@ -251,11 +252,15 @@ fn acquire(
     })
 }
 
+/// Calibrated against official GameViewer (WebRTC-PcFactoryDefaultBitrates/min:300):
+/// 50–65 ms (~15–20 FPS) generates ~200–300 Kbps idle keepalive traffic, safely above
+/// the 200 Kbps starvation threshold, preventing client watchdog "network freeze" warnings
+/// while keeping host idle CPU/GPU load near zero.
 fn random_keepalive(seed: &mut u32) -> Duration {
     *seed ^= *seed << 13;
     *seed ^= *seed >> 17;
     *seed ^= *seed << 5;
-    Duration::from_micros(40_000 + u64::from(*seed % 26_700))
+    Duration::from_millis(50 + u64::from(*seed % 16))
 }
 
 pub fn run(
@@ -868,6 +873,7 @@ fn run_vaapi(
                     data,
                     permit: send_permit,
                     completed_at: Instant::now(),
+                    is_new: dirty,
                 })
                 .is_err()
             {
@@ -939,9 +945,11 @@ fn run_portal_vaapi(
         let Some(permit) = acquire(&budget, &units, &handle) else { return Ok(()); };
         if stop.load(Ordering::Relaxed) { return Ok(()); }
         let due = last_send.elapsed() >= keepalive || idr.load(Ordering::Acquire);
+        let mut is_new_frame = true;
         let captured = if dma_disabled { Ok(DmaCapture::Cpu) } else {
             portal.with_dmabuf(&mut dma_version, |frame, changed| {
                 if !changed && input_dma && !due { return Ok(None); }
+                is_new_frame = changed;
                 if changed || !input_dma {
                     let result = unsafe { vaapi_import_frame(engine.0, frame) };
                     if result != 0 { return Err(format!("VAAPI DMA-BUF import failed: {result}")); }
@@ -993,6 +1001,7 @@ fn run_portal_vaapi(
                     blank_frame = false;
                     portal.capture_changed(&mut cpu_frame, &mut cpu_version)?
                 };
+                is_new_frame = changed;
                 if !changed && !input_dma && uploaded && !due { continue; }
                 if changed || input_dma || !uploaded {
                     let result = unsafe { vaapi_upload_host_buffer(engine.0, cpu_frame.as_ptr(), config.input.0 * 4) };
@@ -1004,7 +1013,7 @@ fn run_portal_vaapi(
             DmaCapture::Unavailable(_) => unreachable!(),
         };
         if data.is_empty() { continue; }
-        if units.blocking_send(EncodedUnit { data, permit, completed_at: Instant::now() }).is_err() { return Ok(()); }
+        if units.blocking_send(EncodedUnit { data, permit, completed_at: Instant::now(), is_new: is_new_frame }).is_err() { return Ok(()); }
         last_send = Instant::now();
         keepalive = random_keepalive(&mut seed);
     }
@@ -1214,6 +1223,7 @@ fn run_nvenc(
                     data,
                     permit: send_permit,
                     completed_at: Instant::now(),
+                    is_new: dirty,
                 })
                 .is_err()
             {
