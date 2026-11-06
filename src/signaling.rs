@@ -649,4 +649,3 @@ fn check_viewer_version_compatibility(viewer_ver: &str) {
         );
     }
 }
-

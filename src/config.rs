@@ -66,4 +66,3 @@ pub fn version_code() -> String {
         .or_else(|| file().ok().flatten().and_then(|f| f.get("version_code")).and_then(|v| v.as_str()).map(str::to_owned))
         .unwrap_or_else(|| "4318".into())
 }
-
