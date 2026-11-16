@@ -95,9 +95,20 @@ extern "C" {
     fn nvenc_destroy(engine: *mut NvencEngineOpaque);
 
     fn vaapi_create(config: *const VaapiConfigFFI) -> *mut VaapiEngineOpaque;
-    fn vaapi_import_dma_buffer(engine: *mut VaapiEngineOpaque, dma_fd: libc::c_int, stride: u32) -> libc::c_int;
-    fn vaapi_import_frame(engine: *mut VaapiEngineOpaque, frame: *const crate::portal::DmaFrame) -> libc::c_int;
-    fn vaapi_upload_host_buffer(engine: *mut VaapiEngineOpaque, host_ptr: *const u8, pitch: u32) -> libc::c_int;
+    fn vaapi_import_dma_buffer(
+        engine: *mut VaapiEngineOpaque,
+        dma_fd: libc::c_int,
+        stride: u32,
+    ) -> libc::c_int;
+    fn vaapi_import_frame(
+        engine: *mut VaapiEngineOpaque,
+        frame: *const crate::portal::DmaFrame,
+    ) -> libc::c_int;
+    fn vaapi_upload_host_buffer(
+        engine: *mut VaapiEngineOpaque,
+        host_ptr: *const u8,
+        pitch: u32,
+    ) -> libc::c_int;
     fn vaapi_encode_frame(
         engine: *mut VaapiEngineOpaque,
         force_idr: libc::c_int,
@@ -106,18 +117,42 @@ extern "C" {
     ) -> libc::c_int;
     fn vaapi_destroy(engine: *mut VaapiEngineOpaque);
 
-    fn dri3_capture_create(display_name: *const libc::c_char, width: u32, height: u32) -> *mut Dri3CaptureOpaque;
+    fn dri3_capture_create(
+        display_name: *const libc::c_char,
+        width: u32,
+        height: u32,
+    ) -> *mut Dri3CaptureOpaque;
     fn dri3_capture_blit(cap: *mut Dri3CaptureOpaque) -> libc::c_int;
-    fn dri3_capture_wait_damage(cap: *mut Dri3CaptureOpaque, timeout_ms: libc::c_int) -> libc::c_int;
+    fn dri3_capture_wait_damage(
+        cap: *mut Dri3CaptureOpaque,
+        timeout_ms: libc::c_int,
+    ) -> libc::c_int;
     fn dri3_capture_get_dma_fd(cap: *mut Dri3CaptureOpaque) -> libc::c_int;
     fn dri3_capture_get_stride(cap: *mut Dri3CaptureOpaque) -> u32;
     fn dri3_capture_destroy(cap: *mut Dri3CaptureOpaque);
 
-    fn x264c_create(config: *const X264cConfigFFI, error: *mut libc::c_int) -> *mut X264cEngineOpaque;
-    fn x264c_convert_bgrx_i420(src: *const u8, pitch: u32, y: *mut u8, u: *mut u8, v: *mut u8,
-                               width: libc::c_int, height: libc::c_int);
-    fn x264c_convert_row_pair(top: *const u8, bottom: *const u8, y_top: *mut u8, y_bottom: *mut u8,
-                              u: *mut u8, v: *mut u8, width: libc::c_int);
+    fn x264c_create(
+        config: *const X264cConfigFFI,
+        error: *mut libc::c_int,
+    ) -> *mut X264cEngineOpaque;
+    fn x264c_convert_bgrx_i420(
+        src: *const u8,
+        pitch: u32,
+        y: *mut u8,
+        u: *mut u8,
+        v: *mut u8,
+        width: libc::c_int,
+        height: libc::c_int,
+    );
+    fn x264c_convert_row_pair(
+        top: *const u8,
+        bottom: *const u8,
+        y_top: *mut u8,
+        y_bottom: *mut u8,
+        u: *mut u8,
+        v: *mut u8,
+        width: libc::c_int,
+    );
     fn x264c_encode_i420(
         engine: *mut X264cEngineOpaque,
         y: *const u8,
@@ -208,7 +243,12 @@ pub fn damage_enabled() -> bool {
 }
 
 pub fn selected(encoder: crate::video::Encoder) -> bool {
-    matches!(encoder, crate::video::Encoder::Nvenc | crate::video::Encoder::Vaapi) && damage_enabled() && !disabled() && crate::config::ffmpeg_root().is_none()
+    matches!(
+        encoder,
+        crate::video::Encoder::Nvenc | crate::video::Encoder::Vaapi
+    ) && damage_enabled()
+        && !disabled()
+        && crate::config::ffmpeg_root().is_none()
 }
 
 /// One encoder thread per stream. Aborting the reader only asks the blocking thread to stop at its
@@ -220,7 +260,10 @@ pub async fn stream_slot(stream: &Arc<AtomicBool>) -> tokio::sync::OwnedMutexGua
     let slot = {
         let mut slots = SLOTS.lock().unwrap_or_else(|e| e.into_inner());
         slots.retain(|(key, _)| key.strong_count() > 0);
-        match slots.iter().find(|(key, _)| std::ptr::eq(key.as_ptr(), Arc::as_ptr(stream))) {
+        match slots
+            .iter()
+            .find(|(key, _)| std::ptr::eq(key.as_ptr(), Arc::as_ptr(stream)))
+        {
             Some((_, slot)) => slot.clone(),
             None => {
                 let slot = Arc::new(tokio::sync::Mutex::new(()));
@@ -282,23 +325,37 @@ pub fn run(
 pub fn black_frame(codec: crate::capture_setting::VideoCodec) -> Result<bytes::Bytes, String> {
     let device = CString::new(crate::video::vaapi_device()).map_err(|_| "Invalid VAAPI device")?;
     let config = VaapiConfigFFI {
-        width: 1280, height: 720, cap_width: 1280, cap_height: 720, fps: 1, gop: 1,
-        target_bps: 1_000_000, max_bps: 2_000_000, buffer_bits: 500_000,
+        width: 1280,
+        height: 720,
+        cap_width: 1280,
+        cap_height: 720,
+        fps: 1,
+        gop: 1,
+        target_bps: 1_000_000,
+        max_bps: 2_000_000,
+        buffer_bits: 500_000,
         is_hevc: libc::c_int::from(codec == crate::capture_setting::VideoCodec::H265),
         device: device.as_ptr(),
     };
     let engine = SafeVaapiEngine(unsafe { vaapi_create(&config) });
-    if engine.0.is_null() { return Err("Locked video VAAPI initialization failed".into()); }
+    if engine.0.is_null() {
+        return Err("Locked video VAAPI initialization failed".into());
+    }
     let pixels = vec![0; 1280 * 720 * 4];
     if unsafe { vaapi_upload_host_buffer(engine.0, pixels.as_ptr(), 1280 * 4) } != 0 {
         return Err("Locked video VAAPI upload failed".into());
     }
     let mut data = std::ptr::null();
     let mut length = 0;
-    if unsafe { vaapi_encode_frame(engine.0, 1, &mut data, &mut length) } != 0 || data.is_null() || length == 0 {
+    if unsafe { vaapi_encode_frame(engine.0, 1, &mut data, &mut length) } != 0
+        || data.is_null()
+        || length == 0
+    {
         return Err("Locked video VAAPI encode failed".into());
     }
-    Ok(bytes::Bytes::copy_from_slice(unsafe { std::slice::from_raw_parts(data, length as usize) }))
+    Ok(bytes::Bytes::copy_from_slice(unsafe {
+        std::slice::from_raw_parts(data, length as usize)
+    }))
 }
 
 /// x264c_create reports why it failed; the message carries the reason, never a library path.
@@ -322,7 +379,9 @@ struct QueuedFrame {
     convert_us: u32,
 }
 
-fn elapsed_us(since: Instant) -> u32 { u32::try_from(since.elapsed().as_micros()).unwrap_or(u32::MAX) }
+fn elapsed_us(since: Instant) -> u32 {
+    u32::try_from(since.elapsed().as_micros()).unwrap_or(u32::MAX)
+}
 
 /// A frame handed to the encoder side, or the frame back when that side is already gone.
 enum PushOutcome {
@@ -341,7 +400,10 @@ struct FrameQueue {
 
 impl FrameQueue {
     fn new() -> Self {
-        Self { state: std::sync::Mutex::new((None, false)), cv: std::sync::Condvar::new() }
+        Self {
+            state: std::sync::Mutex::new((None, false)),
+            cv: std::sync::Condvar::new(),
+        }
     }
 
     fn push(&self, frame: QueuedFrame) -> PushOutcome {
@@ -379,7 +441,9 @@ impl FrameQueue {
 /// Closes the queue when a pipeline thread unwinds, so a panic cannot leave its peer waiting.
 struct CloseOnDrop<'a>(&'a FrameQueue);
 impl Drop for CloseOnDrop<'_> {
-    fn drop(&mut self) { self.0.close(); }
+    fn drop(&mut self) {
+        self.0.close();
+    }
 }
 
 /// Double-buffered I420 planes shared by the capture and encoder threads. x264 copies the input
@@ -392,7 +456,11 @@ struct PlanePool {
 
 impl PlanePool {
     fn new(max: usize) -> Self {
-        Self { state: std::sync::Mutex::new((Vec::new(), 0)), cv: std::sync::Condvar::new(), max }
+        Self {
+            state: std::sync::Mutex::new((Vec::new(), 0)),
+            cv: std::sync::Condvar::new(),
+            max,
+        }
     }
 
     /// Waits for a free plane buffer; None when `stop` is set while waiting.
@@ -410,7 +478,11 @@ impl PlanePool {
             if stop.load(Ordering::Relaxed) {
                 return None;
             }
-            state = self.cv.wait_timeout(state, Duration::from_millis(20)).unwrap_or_else(|e| e.into_inner()).0;
+            state = self
+                .cv
+                .wait_timeout(state, Duration::from_millis(20))
+                .unwrap_or_else(|e| e.into_inner())
+                .0;
         }
     }
 
@@ -458,7 +530,10 @@ fn run_x264(
     let mut reason = 0;
     let raw_engine = unsafe { x264c_create(&ffi_cfg, &mut reason) };
     if raw_engine.is_null() {
-        return Err(format!("Failed to create native x264 engine: {}", x264c_error(reason)));
+        return Err(format!(
+            "Failed to create native x264 engine: {}",
+            x264c_error(reason)
+        ));
     }
     let engine = SafeX264Engine(raw_engine);
     let handle = tokio::runtime::Handle::current();
@@ -466,17 +541,30 @@ fn run_x264(
     let pool = Arc::new(PlanePool::new(2));
     let producer = {
         let (config, queue, pool, units, stop, idr, budget, handle) = (
-            config.clone(), queue.clone(), pool.clone(), units.clone(), stop.clone(),
-            idr.clone(), budget.clone(), handle.clone(),
+            config.clone(),
+            queue.clone(),
+            pool.clone(),
+            units.clone(),
+            stop.clone(),
+            idr.clone(),
+            budget.clone(),
+            handle.clone(),
         );
-        std::thread::Builder::new().name("x264-capture".into())
-            .spawn(move || produce_x264(config, queue, pool, units, stop, idr, budget, handle, width, height))
+        std::thread::Builder::new()
+            .name("x264-capture".into())
+            .spawn(move || {
+                produce_x264(
+                    config, queue, pool, units, stop, idr, budget, handle, width, height,
+                )
+            })
             .map_err(|e| format!("x264 capture thread: {e}"))?
     };
     let encoder = {
-        let (config, queue, pool, units, stop) = (config, queue.clone(), pool.clone(), units, stop.clone());
+        let (config, queue, pool, units, stop) =
+            (config, queue.clone(), pool.clone(), units, stop.clone());
         let engine = engine;
-        std::thread::Builder::new().name("x264-encode".into())
+        std::thread::Builder::new()
+            .name("x264-encode".into())
             .spawn(move || encode_x264(config, engine, queue, pool, units, stop, width, height))
     };
     let encoder = match encoder {
@@ -488,30 +576,50 @@ fn run_x264(
             return Err(format!("x264 encoder thread: {e}"));
         }
     };
-    let encoder = encoder.join().unwrap_or_else(|_| Err("x264 encoder thread panicked".into()));
+    let encoder = encoder
+        .join()
+        .unwrap_or_else(|_| Err("x264 encoder thread panicked".into()));
     if encoder.is_err() {
         // The capture thread checks `stop` and pushes into a closed queue; wake it before joining.
         stop.store(true, Ordering::Relaxed);
         queue.close();
     }
-    let producer = producer.join().unwrap_or_else(|_| Err("x264 capture thread panicked".into()));
+    let producer = producer
+        .join()
+        .unwrap_or_else(|_| Err("x264 capture thread panicked".into()));
     encoder.and(producer)
 }
 
 fn produce_x264(
-    config: Config, queue: Arc<FrameQueue>, pool: Arc<PlanePool>, units: mpsc::Sender<EncodedUnit>,
-    stop: Arc<AtomicBool>, idr: Arc<AtomicBool>, budget: Arc<Semaphore>, handle: tokio::runtime::Handle,
-    width: u32, height: u32,
+    config: Config,
+    queue: Arc<FrameQueue>,
+    pool: Arc<PlanePool>,
+    units: mpsc::Sender<EncodedUnit>,
+    stop: Arc<AtomicBool>,
+    idr: Arc<AtomicBool>,
+    budget: Arc<Semaphore>,
+    handle: tokio::runtime::Handle,
+    width: u32,
+    height: u32,
 ) -> Result<(), String> {
     let _close_on_drop = CloseOnDrop(&queue);
-    produce_x264_inner(&config, &queue, &pool, &units, &stop, &idr, &budget, &handle, width, height)
+    produce_x264_inner(
+        &config, &queue, &pool, &units, &stop, &idr, &budget, &handle, width, height,
+    )
 }
 
 #[allow(clippy::too_many_arguments)]
 fn produce_x264_inner(
-    config: &Config, queue: &FrameQueue, pool: &PlanePool, units: &mpsc::Sender<EncodedUnit>,
-    stop: &AtomicBool, idr: &AtomicBool, budget: &Arc<Semaphore>, handle: &tokio::runtime::Handle,
-    width: u32, height: u32,
+    config: &Config,
+    queue: &FrameQueue,
+    pool: &PlanePool,
+    units: &mpsc::Sender<EncodedUnit>,
+    stop: &AtomicBool,
+    idr: &AtomicBool,
+    budget: &Arc<Semaphore>,
+    handle: &tokio::runtime::Handle,
+    width: u32,
+    height: u32,
 ) -> Result<(), String> {
     let mut capture = DamageCapture::open(&config.display)
         .map_err(|e| format!("DamageCapture::open failed on {}: {e}", config.display))?;
@@ -523,7 +631,11 @@ fn produce_x264_inner(
             cap_height,
             width,
             height,
-            if config.output.is_some() { "bilinear scaling" } else { "padding" }
+            if config.output.is_some() {
+                "bilinear scaling"
+            } else {
+                "padding"
+            }
         );
     }
     let bytes_per_line = cap_width as usize * 4;
@@ -546,7 +658,11 @@ fn produce_x264_inner(
         if stop.load(Ordering::Relaxed) {
             return Ok(());
         }
-        let deadline = if dirty { next_tick } else { last_send + keepalive };
+        let deadline = if dirty {
+            next_tick
+        } else {
+            last_send + keepalive
+        };
         let wait = deadline.saturating_duration_since(Instant::now());
         if capture.wait(wait.max(Duration::from_millis(1)))? {
             dirty = true;
@@ -586,24 +702,52 @@ fn produce_x264_inner(
         let convert_started = Instant::now();
         if cap_width == width && cap_height == height {
             unsafe {
-                x264c_convert_bgrx_i420(source.as_ptr(), bytes_per_line as u32, planes.y.as_mut_ptr(),
-                                        planes.u.as_mut_ptr(), planes.v.as_mut_ptr(),
-                                        width as libc::c_int, height as libc::c_int);
+                x264c_convert_bgrx_i420(
+                    source.as_ptr(),
+                    bytes_per_line as u32,
+                    planes.y.as_mut_ptr(),
+                    planes.u.as_mut_ptr(),
+                    planes.v.as_mut_ptr(),
+                    width as libc::c_int,
+                    height as libc::c_int,
+                );
             }
         } else if config.output.is_some() {
-            scale_convert_bgrx_i420(source, cap_width, cap_height, &mut planes.y, &mut planes.u, &mut planes.v, width, height);
+            scale_convert_bgrx_i420(
+                source,
+                cap_width,
+                cap_height,
+                &mut planes.y,
+                &mut planes.u,
+                &mut planes.v,
+                width,
+                height,
+            );
         } else {
             frame_buf.resize(width as usize * height as usize * 4, 0);
             pad_argb32(source, cap_width, cap_height, &mut frame_buf, width, height);
             unsafe {
-                x264c_convert_bgrx_i420(frame_buf.as_ptr(), width * 4, planes.y.as_mut_ptr(),
-                                        planes.u.as_mut_ptr(), planes.v.as_mut_ptr(),
-                                        width as libc::c_int, height as libc::c_int);
+                x264c_convert_bgrx_i420(
+                    frame_buf.as_ptr(),
+                    width * 4,
+                    planes.y.as_mut_ptr(),
+                    planes.u.as_mut_ptr(),
+                    planes.v.as_mut_ptr(),
+                    width as libc::c_int,
+                    height as libc::c_int,
+                );
             }
         }
         let convert_us = elapsed_us(convert_started);
 
-        let frame = QueuedFrame { planes, force_idr, permit, captured_at, capture_us, convert_us };
+        let frame = QueuedFrame {
+            planes,
+            force_idr,
+            permit,
+            captured_at,
+            capture_us,
+            convert_us,
+        };
         match queue.push(frame) {
             PushOutcome::Stored(old) => {
                 if let Some(old) = old {
@@ -636,28 +780,46 @@ fn produce_x264_inner(
 
 /// Mean of a per-window microsecond sum in milliseconds; an empty window is zero.
 fn window_mean_ms(sum_us: u64, window_frames: u64) -> f64 {
-    if window_frames == 0 { 0.0 } else { sum_us as f64 / window_frames as f64 / 1000.0 }
+    if window_frames == 0 {
+        0.0
+    } else {
+        sum_us as f64 / window_frames as f64 / 1000.0
+    }
 }
 
 fn encode_x264(
-    config: Config, engine: SafeX264Engine, queue: Arc<FrameQueue>, pool: Arc<PlanePool>,
-    units: mpsc::Sender<EncodedUnit>, stop: Arc<AtomicBool>, width: u32, height: u32,
+    config: Config,
+    engine: SafeX264Engine,
+    queue: Arc<FrameQueue>,
+    pool: Arc<PlanePool>,
+    units: mpsc::Sender<EncodedUnit>,
+    stop: Arc<AtomicBool>,
+    width: u32,
+    height: u32,
 ) -> Result<(), String> {
     let _close_on_drop = CloseOnDrop(&queue);
-    let result = encode_x264_inner(&config, &engine, &queue, &pool, &units, &stop, width, height);
+    let result = encode_x264_inner(
+        &config, &engine, &queue, &pool, &units, &stop, width, height,
+    );
     // Any encoder exit must also stop the capture side, otherwise the session hangs in run_x264.
     stop.store(true, Ordering::Relaxed);
     result
 }
 
 fn encode_x264_inner(
-    config: &Config, engine: &SafeX264Engine, queue: &FrameQueue, pool: &PlanePool,
-    units: &mpsc::Sender<EncodedUnit>, stop: &AtomicBool, width: u32, height: u32,
+    _config: &Config,
+    engine: &SafeX264Engine,
+    queue: &FrameQueue,
+    pool: &PlanePool,
+    units: &mpsc::Sender<EncodedUnit>,
+    stop: &AtomicBool,
+    _width: u32,
+    _height: u32,
 ) -> Result<(), String> {
-
     // Stage means and the end-to-end latency median over one statistic window (2 s at 60 fps).
     const STATS_FRAMES: u64 = 120;
-    let (mut window_frames, mut capture_sum, mut convert_sum, mut encode_sum) = (0u64, 0u64, 0u64, 0u64);
+    let (mut window_frames, mut capture_sum, mut convert_sum, mut encode_sum) =
+        (0u64, 0u64, 0u64, 0u64);
     let mut latencies: Vec<u32> = Vec::with_capacity(STATS_FRAMES as usize);
     loop {
         if stop.load(Ordering::Relaxed) {
@@ -670,8 +832,15 @@ fn encode_x264_inner(
         let mut out_len: u32 = 0;
         let encode_started = Instant::now();
         let res = unsafe {
-            x264c_encode_i420(engine.0, frame.planes.y.as_ptr(), frame.planes.u.as_ptr(),
-                              frame.planes.v.as_ptr(), frame.force_idr, &mut out_data, &mut out_len)
+            x264c_encode_i420(
+                engine.0,
+                frame.planes.y.as_ptr(),
+                frame.planes.u.as_ptr(),
+                frame.planes.v.as_ptr(),
+                frame.force_idr,
+                &mut out_data,
+                &mut out_len,
+            )
         };
         let encode_us = elapsed_us(encode_started);
         // x264 copied the input picture during encoder_encode; hand the buffer back immediately.
@@ -704,7 +873,12 @@ fn encode_x264_inner(
                 latencies.clear();
             }
             if units
-                .blocking_send(EncodedUnit { data, is_new: true, permit: frame.permit, completed_at })
+                .blocking_send(EncodedUnit {
+                    data,
+                    is_new: true,
+                    permit: frame.permit,
+                    completed_at,
+                })
                 .is_err()
             {
                 return Ok(());
@@ -733,7 +907,8 @@ fn run_vaapi(
         config.gop,
         config.codec == crate::capture_setting::VideoCodec::H265
     );
-    let device = CString::new(crate::video::vaapi_device()).map_err(|_| "UU_VAAPI_DEVICE contains NUL".to_string())?;
+    let device = CString::new(crate::video::vaapi_device())
+        .map_err(|_| "UU_VAAPI_DEVICE contains NUL".to_string())?;
     let ffi_cfg = VaapiConfigFFI {
         width,
         height,
@@ -760,18 +935,26 @@ fn run_vaapi(
         return run_wayland_vaapi(&config, &engine, units, stop, idr, budget);
     }
     // Capture stays at the full input size; VPP scales (or pads) to the encoder size.
-    let display = CString::new(config.display.as_str()).map_err(|_| "DISPLAY contains NUL".to_string())?;
-    let dri3 = Some(SafeDri3Capture(unsafe { dri3_capture_create(display.as_ptr(), cap_width, cap_height) }))
-        .filter(|c| !c.0.is_null())
-        .filter(|c| unsafe {
-            let (fd, stride) = (dri3_capture_get_dma_fd(c.0), dri3_capture_get_stride(c.0));
-            fd >= 0 && stride > 0 && vaapi_import_dma_buffer(engine.0, fd, stride) == 0
-        });
+    let display =
+        CString::new(config.display.as_str()).map_err(|_| "DISPLAY contains NUL".to_string())?;
+    let dri3 = Some(SafeDri3Capture(unsafe {
+        dri3_capture_create(display.as_ptr(), cap_width, cap_height)
+    }))
+    .filter(|c| !c.0.is_null())
+    .filter(|c| unsafe {
+        let (fd, stride) = (dri3_capture_get_dma_fd(c.0), dri3_capture_get_stride(c.0));
+        fd >= 0 && stride > 0 && vaapi_import_dma_buffer(engine.0, fd, stride) == 0
+    });
     let mut capture = None;
     if dri3.is_some() {
-        log::info!("Native VAAPI imports a DRI3 DMA-BUF of the root window (GPU blit, VPP to NV12)");
+        log::info!(
+            "Native VAAPI imports a DRI3 DMA-BUF of the root window (GPU blit, VPP to NV12)"
+        );
     } else {
-        log::warn!("DRI3 DMA-BUF unavailable on {}, uploading XShm frames to VAAPI", config.display);
+        log::warn!(
+            "DRI3 DMA-BUF unavailable on {}, uploading XShm frames to VAAPI",
+            config.display
+        );
         capture = Some(
             DamageCapture::open(&config.display)
                 .map_err(|e| format!("DamageCapture::open failed on {}: {e}", config.display))?,
@@ -847,7 +1030,8 @@ fn run_vaapi(
                 }
                 (None, Some(c)) => {
                     let pitch = c.size().0 * 4;
-                    let res = unsafe { vaapi_upload_host_buffer(engine.0, c.capture()?.as_ptr(), pitch) };
+                    let res =
+                        unsafe { vaapi_upload_host_buffer(engine.0, c.capture()?.as_ptr(), pitch) };
                     if res != 0 {
                         return Err(format!("vaapi_upload_host_buffer failed with error {res}"));
                     }
@@ -900,14 +1084,23 @@ fn vaapi_packet(engine: &SafeVaapiEngine, idr: &AtomicBool) -> Result<Vec<u8>, S
     let mut length = 0;
     let force_idr = libc::c_int::from(idr.swap(false, Ordering::AcqRel));
     let result = unsafe { vaapi_encode_frame(engine.0, force_idr, &mut data, &mut length) };
-    if result != 0 { return Err(format!("VAAPI encode failed: {result}")); }
-    if data.is_null() || length == 0 { return Ok(Vec::new()); }
+    if result != 0 {
+        return Err(format!("VAAPI encode failed: {result}"));
+    }
+    if data.is_null() || length == 0 {
+        return Ok(Vec::new());
+    }
     Ok(unsafe { std::slice::from_raw_parts(data, length as usize) }.to_vec())
 }
 
 fn run_portal_vaapi(
-    config: &Config, portal: &crate::portal::PortalSession, engine: &SafeVaapiEngine,
-    units: mpsc::Sender<EncodedUnit>, stop: Arc<AtomicBool>, idr: Arc<AtomicBool>, budget: Arc<Semaphore>,
+    config: &Config,
+    portal: &crate::portal::PortalSession,
+    engine: &SafeVaapiEngine,
+    units: mpsc::Sender<EncodedUnit>,
+    stop: Arc<AtomicBool>,
+    idr: Arc<AtomicBool>,
+    budget: Arc<Semaphore>,
 ) -> Result<(), String> {
     use crate::portal::DmaCapture;
     let interval = Duration::from_nanos(1_000_000_000 / u64::from(config.fps));
@@ -922,9 +1115,13 @@ fn run_portal_vaapi(
     let mut input_dma = false;
     let mut blank_frame = false;
     let mut dma_disabled = std::env::var("UU_PORTAL_DMABUF").is_ok_and(|v| v == "0");
-    if dma_disabled { log::info!("Portal VAAPI DMA-BUF disabled by setting; pipeline=host-upload"); }
+    if dma_disabled {
+        log::info!("Portal VAAPI DMA-BUF disabled by setting; pipeline=host-upload");
+    }
     loop {
-        if stop.load(Ordering::Relaxed) || units.is_closed() { return Ok(()); }
+        if stop.load(Ordering::Relaxed) || units.is_closed() {
+            return Ok(());
+        }
         let wait_dur = next_poll.saturating_duration_since(Instant::now());
         if wait_dur > Duration::ZERO {
             match portal.wait_frame(wait_dur) {
@@ -938,14 +1135,24 @@ fn run_portal_vaapi(
             }
         }
         let now = Instant::now();
-        if now < next_poll { continue; }
+        if now < next_poll {
+            continue;
+        }
         next_poll = (next_poll + interval).max(now);
-        if portal.size() != config.input { return Err("Portal size changed; restart encoder".into()); }
-        let Some(permit) = acquire(&budget, &units, &tokio::runtime::Handle::current()) else { return Ok(()); };
-        if stop.load(Ordering::Relaxed) { return Ok(()); }
+        if portal.size() != config.input {
+            return Err("Portal size changed; restart encoder".into());
+        }
+        let Some(permit) = acquire(&budget, &units, &tokio::runtime::Handle::current()) else {
+            return Ok(());
+        };
+        if stop.load(Ordering::Relaxed) {
+            return Ok(());
+        }
         let due = last_send.elapsed() >= keepalive || idr.load(Ordering::Acquire);
         let mut is_new_frame = true;
-        let captured = if dma_disabled { Ok(DmaCapture::Cpu) } else {
+        let captured = if dma_disabled {
+            Ok(DmaCapture::Cpu)
+        } else {
             portal.with_dmabuf(&mut dma_version, |frame, changed| {
                 if !changed && input_dma && !due { return Ok(None); }
                 is_new_frame = changed;
@@ -976,14 +1183,18 @@ fn run_portal_vaapi(
                     _ => "DMA-BUF interface unavailable",
                 };
                 log::warn!("Portal DMA-BUF unavailable: {reason} (code={code}); falling back to native VAAPI host upload");
-                dma_disabled = true; portal.disable_dmabuf();
+                dma_disabled = true;
+                portal.disable_dmabuf();
                 DmaCapture::Cpu
-            },
+            }
             Err(error) => {
-                log::warn!("Portal DMA-BUF unavailable: {error}; falling back to native VAAPI host upload");
-                dma_disabled = true; portal.disable_dmabuf();
+                log::warn!(
+                    "Portal DMA-BUF unavailable: {error}; falling back to native VAAPI host upload"
+                );
+                dma_disabled = true;
+                portal.disable_dmabuf();
                 DmaCapture::Cpu
-            },
+            }
             Ok(value) => value,
         };
         let data = match captured {
@@ -993,7 +1204,9 @@ fn run_portal_vaapi(
                 cpu_frame.resize(config.input.0 as usize * config.input.1 as usize * 4, 0);
                 let changed = if matches!(state, DmaCapture::Blank) {
                     let changed = !blank_frame;
-                    if changed { cpu_frame.fill(0); }
+                    if changed {
+                        cpu_frame.fill(0);
+                    }
                     blank_frame = true;
                     changed
                 } else {
@@ -1001,29 +1214,54 @@ fn run_portal_vaapi(
                     portal.capture_changed(&mut cpu_frame, &mut cpu_version)?
                 };
                 is_new_frame = changed;
-                if !changed && !input_dma && uploaded && !due { continue; }
+                if !changed && !input_dma && uploaded && !due {
+                    continue;
+                }
                 if changed || input_dma || !uploaded {
-                    let result = unsafe { vaapi_upload_host_buffer(engine.0, cpu_frame.as_ptr(), config.input.0 * 4) };
-                    if result != 0 { return Err(format!("Portal VAAPI upload failed: {result}")); }
-                    input_dma = false; uploaded = true;
+                    let result = unsafe {
+                        vaapi_upload_host_buffer(engine.0, cpu_frame.as_ptr(), config.input.0 * 4)
+                    };
+                    if result != 0 {
+                        return Err(format!("Portal VAAPI upload failed: {result}"));
+                    }
+                    input_dma = false;
+                    uploaded = true;
                 }
                 vaapi_packet(engine, &idr)?
-            },
+            }
             DmaCapture::Unavailable(_) => unreachable!(),
         };
-        if data.is_empty() { continue; }
-        if units.blocking_send(EncodedUnit { data, permit, completed_at: Instant::now(), is_new: is_new_frame }).is_err() { return Ok(()); }
+        if data.is_empty() {
+            continue;
+        }
+        if units
+            .blocking_send(EncodedUnit {
+                data,
+                permit,
+                completed_at: Instant::now(),
+                is_new: is_new_frame,
+            })
+            .is_err()
+        {
+            return Ok(());
+        }
         last_send = Instant::now();
         keepalive = random_keepalive(&mut seed);
     }
 }
 
-fn vaapi_wait(dri3: &Option<SafeDri3Capture>, capture: &mut Option<DamageCapture>, timeout: Duration) -> Result<bool, String> {
+fn vaapi_wait(
+    dri3: &Option<SafeDri3Capture>,
+    capture: &mut Option<DamageCapture>,
+    timeout: Duration,
+) -> Result<bool, String> {
     match (dri3, capture) {
-        (Some(c), _) => match unsafe { dri3_capture_wait_damage(c.0, timeout.as_millis().min(1000) as i32) } {
-            r if r < 0 => Err("XDamage wait on the DRI3 connection failed".into()),
-            r => Ok(r > 0),
-        },
+        (Some(c), _) => {
+            match unsafe { dri3_capture_wait_damage(c.0, timeout.as_millis().min(1000) as i32) } {
+                r if r < 0 => Err("XDamage wait on the DRI3 connection failed".into()),
+                r => Ok(r > 0),
+            }
+        }
         (None, Some(c)) => c.wait(timeout),
         (None, None) => unreachable!(),
     }
@@ -1087,9 +1325,13 @@ fn run_nvenc(
         let res = unsafe { nvenc_register_host_buffer(engine.0, shm_ptr, shm_len) };
         if res == 0 {
             zero_copy = true;
-            log::info!("Native NVENC reads the registered XShm buffer directly (no host-to-device copy)");
+            log::info!(
+                "Native NVENC reads the registered XShm buffer directly (no host-to-device copy)"
+            );
         } else {
-            log::warn!("nvenc_register_host_buffer returned {res}, copying frames with cuMemcpyHtoD");
+            log::warn!(
+                "nvenc_register_host_buffer returned {res}, copying frames with cuMemcpyHtoD"
+            );
         }
     } else {
         log::info!(
@@ -1098,7 +1340,11 @@ fn run_nvenc(
             cap_height,
             width,
             height,
-            if config.output.is_some() { "bilinear scaling" } else { "padding" }
+            if config.output.is_some() {
+                "bilinear scaling"
+            } else {
+                "padding"
+            }
         );
     }
 
@@ -1190,7 +1436,14 @@ fn run_nvenc(
             } else {
                 frame_buf.resize(width as usize * height as usize * 4, 0);
                 if config.output.is_some() {
-                    scale_bilinear_argb32(source, cap_width, cap_height, &mut frame_buf, width, height);
+                    scale_bilinear_argb32(
+                        source,
+                        cap_width,
+                        cap_height,
+                        &mut frame_buf,
+                        width,
+                        height,
+                    );
                 } else {
                     pad_argb32(source, cap_width, cap_height, &mut frame_buf, width, height);
                 }
@@ -1247,11 +1500,19 @@ fn run_nvenc(
 
 /// One I420 frame owned by the encoder pipeline. x264 copies the input picture during
 /// encoder_encode, so a plane buffer is reusable as soon as x264c_encode_i420 returns.
-struct Planes { y: Vec<u8>, u: Vec<u8>, v: Vec<u8> }
+struct Planes {
+    y: Vec<u8>,
+    u: Vec<u8>,
+    v: Vec<u8>,
+}
 impl Planes {
     fn new(w: u32, h: u32) -> Self {
         let (cw, ch) = (w as usize / 2, h as usize / 2);
-        Self { y: vec![0; w as usize * h as usize], u: vec![0; cw * ch], v: vec![0; cw * ch] }
+        Self {
+            y: vec![0; w as usize * h as usize],
+            u: vec![0; cw * ch],
+            v: vec![0; cw * ch],
+        }
     }
 }
 
@@ -1259,7 +1520,8 @@ impl Planes {
 fn taps_for(dst_len: u32, src_len: u32) -> Vec<(usize, usize, u32)> {
     (0..dst_len)
         .map(|d| {
-            let pos = ((2 * u64::from(d) + 1) * u64::from(src_len) * 128 / u64::from(dst_len)).saturating_sub(128);
+            let pos = ((2 * u64::from(d) + 1) * u64::from(src_len) * 128 / u64::from(dst_len))
+                .saturating_sub(128);
             let first = ((pos >> 8) as usize).min(src_len as usize - 1);
             let second = (first + 1).min(src_len as usize - 1);
             (first, second, (pos & 255) as u32)
@@ -1274,7 +1536,14 @@ fn taps_for(dst_len: u32, src_len: u32) -> Vec<(usize, usize, u32)> {
 /// horizontal pass runs one pixel (4 channels) per __m128i. The in-process x264 path uses the
 /// fused scale+convert instead; this stays for the NVENC copy path and as the fused path test
 /// reference.
-fn scale_bilinear_argb32(src: &[u8], src_w: u32, src_h: u32, dst: &mut [u8], dst_w: u32, dst_h: u32) {
+fn scale_bilinear_argb32(
+    src: &[u8],
+    src_w: u32,
+    src_h: u32,
+    dst: &mut [u8],
+    dst_w: u32,
+    dst_h: u32,
+) {
     if src_w == 0 || src_h == 0 || dst_w == 0 || dst_h == 0 {
         return;
     }
@@ -1289,8 +1558,15 @@ fn scale_bilinear_argb32(src: &[u8], src_w: u32, src_h: u32, dst: &mut [u8], dst
 /// One destination BGRX row of the separable scaler: vertical lerp into a u16 row, then the
 /// SSE4.1/scalar horizontal pass. Weights stay in u32 in the vertical pass: a fy of 0 makes the
 /// top weight 256, which must not wrap in u16 before the single end rounding.
-fn scaled_row(src: &[u8], src_stride: usize, rows: &[(usize, usize, u32)], r: usize,
-              columns: &[(usize, usize, u32)], mid: &mut [u16], dst_row: &mut [u8]) {
+fn scaled_row(
+    src: &[u8],
+    src_stride: usize,
+    rows: &[(usize, usize, u32)],
+    r: usize,
+    columns: &[(usize, usize, u32)],
+    mid: &mut [u16],
+    dst_row: &mut [u8],
+) {
     let (y0, y1, fy) = rows[r];
     let (top, bottom) = (&src[y0 * src_stride..], &src[y1 * src_stride..]);
     let (a, b) = (256 - fy, fy);
@@ -1310,9 +1586,17 @@ fn scaled_row(src: &[u8], src_stride: usize, rows: &[(usize, usize, u32)], r: us
 
 /// Scale and convert to I420 two destination rows at a time: the scaled rows live in two row
 /// buffers and go straight into Y/U/V, so a scaled BGRX frame is never materialised.
-fn scale_convert_bgrx_i420(src: &[u8], src_w: u32, src_h: u32, y: &mut [u8], u: &mut [u8], v: &mut [u8],
-                           dst_w: u32, dst_h: u32) {
-    debug_assert!(dst_w % 2 == 0 && dst_h % 2 == 0);
+fn scale_convert_bgrx_i420(
+    src: &[u8],
+    src_w: u32,
+    src_h: u32,
+    y: &mut [u8],
+    u: &mut [u8],
+    v: &mut [u8],
+    dst_w: u32,
+    dst_h: u32,
+) {
+    debug_assert!(dst_w.is_multiple_of(2) && dst_h.is_multiple_of(2));
     let src_stride = src_w as usize * 4;
     let dst_stride = dst_w as usize * 4;
     let (columns, rows) = (taps_for(dst_w, src_w), taps_for(dst_h, src_h));
@@ -1321,19 +1605,41 @@ fn scale_convert_bgrx_i420(src: &[u8], src_w: u32, src_h: u32, y: &mut [u8], u: 
     let mut bottom = vec![0u8; dst_stride];
     let (dw, cw) = (dst_w as usize, dst_w as usize / 2);
     for pair in 0..dst_h as usize / 2 {
-        scaled_row(src, src_stride, &rows, pair * 2, &columns, &mut mid, &mut top);
-        scaled_row(src, src_stride, &rows, pair * 2 + 1, &columns, &mut mid, &mut bottom);
+        scaled_row(
+            src,
+            src_stride,
+            &rows,
+            pair * 2,
+            &columns,
+            &mut mid,
+            &mut top,
+        );
+        scaled_row(
+            src,
+            src_stride,
+            &rows,
+            pair * 2 + 1,
+            &columns,
+            &mut mid,
+            &mut bottom,
+        );
         let (y_row, c_row) = (pair * 2 * dw, pair * cw);
         unsafe {
-            x264c_convert_row_pair(top.as_ptr(), bottom.as_ptr(), y[y_row..].as_mut_ptr(),
-                                   y[y_row + dw..].as_mut_ptr(), u[c_row..].as_mut_ptr(),
-                                   v[c_row..].as_mut_ptr(), dst_w as libc::c_int);
+            x264c_convert_row_pair(
+                top.as_ptr(),
+                bottom.as_ptr(),
+                y[y_row..].as_mut_ptr(),
+                y[y_row + dw..].as_mut_ptr(),
+                u[c_row..].as_mut_ptr(),
+                v[c_row..].as_mut_ptr(),
+                dst_w as libc::c_int,
+            );
         }
     }
 }
 
 fn horizontal_row_scalar(row: &[u16], columns: &[(usize, usize, u32)], dst_row: &mut [u8]) {
-    for (pixel, &(x0, x1, fx)) in dst_row.chunks_exact_mut(4).zip(columns) {
+    for (pixel, &(x0, x1, fx)) in dst_row.as_chunks_mut::<4>().0.iter_mut().zip(columns) {
         let (a, b) = (256 - fx, fx);
         for c in 0..4 {
             let t = u32::from(row[x0 * 4 + c]) * a + u32::from(row[x1 * 4 + c]) * b;
@@ -1369,17 +1675,27 @@ unsafe fn vertical_row_avx2(top: &[u8], bottom: &[u8], a: u16, b: u16, mid: &mut
 fn avx2_available() -> bool {
     static AVX2: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     #[cfg(target_arch = "x86_64")]
-    { *AVX2.get_or_init(|| std::arch::is_x86_feature_detected!("avx2")) }
+    {
+        *AVX2.get_or_init(|| std::arch::is_x86_feature_detected!("avx2"))
+    }
     #[cfg(not(target_arch = "x86_64"))]
-    { let _ = &AVX2; false }
+    {
+        let _ = &AVX2;
+        false
+    }
 }
 
 fn sse41_available() -> bool {
     static SSE41: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     #[cfg(target_arch = "x86_64")]
-    { *SSE41.get_or_init(|| std::arch::is_x86_feature_detected!("sse4.1")) }
+    {
+        *SSE41.get_or_init(|| std::arch::is_x86_feature_detected!("sse4.1"))
+    }
     #[cfg(not(target_arch = "x86_64"))]
-    { let _ = &SSE41; false }
+    {
+        let _ = &SSE41;
+        false
+    }
 }
 
 #[cfg(target_arch = "x86_64")]
@@ -1388,7 +1704,7 @@ unsafe fn horizontal_row_sse41(row: &[u16], columns: &[(usize, usize, u32)], dst
     use std::arch::x86_64::*;
     let zero = _mm_setzero_si128();
     let bias = _mm_set1_epi32(32768);
-    for (pixel, &(x0, x1, fx)) in dst_row.chunks_exact_mut(4).zip(columns) {
+    for (pixel, &(x0, x1, fx)) in dst_row.as_chunks_mut::<4>().0.iter_mut().zip(columns) {
         // Values fit u32 exactly like the scalar form: 255*256*256 max, no saturation bites.
         let p0 = _mm_loadl_epi64(row.as_ptr().add(x0 * 4) as *const __m128i);
         let p1 = _mm_loadl_epi64(row.as_ptr().add(x1 * 4) as *const __m128i);
@@ -1396,7 +1712,10 @@ unsafe fn horizontal_row_sse41(row: &[u16], columns: &[(usize, usize, u32)], dst
         let w1 = _mm_unpacklo_epi16(p1, zero);
         let wa = _mm_set1_epi32((256 - fx) as i32);
         let wb = _mm_set1_epi32(fx as i32);
-        let t = _mm_add_epi32(_mm_add_epi32(_mm_mullo_epi32(w0, wa), _mm_mullo_epi32(w1, wb)), bias);
+        let t = _mm_add_epi32(
+            _mm_add_epi32(_mm_mullo_epi32(w0, wa), _mm_mullo_epi32(w1, wb)),
+            bias,
+        );
         let s = _mm_srli_epi32(t, 16);
         let packed = _mm_packus_epi16(_mm_packs_epi32(s, s), zero);
         let out = _mm_cvtsi128_si32(packed) as u32;
@@ -1437,16 +1756,41 @@ mod budget_tests {
     fn vaapi_locked_frames_decode_as_black_in_both_codecs() {
         use std::io::Write;
         use std::process::{Command, Stdio};
-        for codec in [crate::capture_setting::VideoCodec::H264, crate::capture_setting::VideoCodec::H265] {
+        for codec in [
+            crate::capture_setting::VideoCodec::H264,
+            crate::capture_setting::VideoCodec::H265,
+        ] {
             let frame = black_frame(codec).unwrap();
-            let mut decoder = Command::new("ffmpeg").args(["-hide_banner", "-loglevel", "error", "-i", "pipe:0",
-                "-frames:v", "1", "-vf", "scale=1:1", "-pix_fmt", "rgb24", "-f", "rawvideo", "pipe:1"])
-                .stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
+            let mut decoder = Command::new("ffmpeg")
+                .args([
+                    "-hide_banner",
+                    "-loglevel",
+                    "error",
+                    "-i",
+                    "pipe:0",
+                    "-frames:v",
+                    "1",
+                    "-vf",
+                    "scale=1:1",
+                    "-pix_fmt",
+                    "rgb24",
+                    "-f",
+                    "rawvideo",
+                    "pipe:1",
+                ])
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+                .unwrap();
             decoder.stdin.take().unwrap().write_all(&frame).unwrap();
             let decoded = decoder.wait_with_output().unwrap();
             assert!(decoded.status.success(), "decode failed for {codec:?}");
             assert_eq!(decoded.stdout.len(), 3);
-            assert!(decoded.stdout.iter().all(|&value| value <= 3), "frame is not black for {codec:?}");
+            assert!(
+                decoded.stdout.iter().all(|&value| value <= 3),
+                "frame is not black for {codec:?}"
+            );
         }
     }
 
@@ -1454,21 +1798,42 @@ mod budget_tests {
     async fn closing_encoder_output_wakes_a_blocked_capture() {
         let budget = Arc::new(Semaphore::new(0));
         let (tx, rx) = mpsc::channel(1);
-        let worker = tokio::task::spawn_blocking(move || acquire(&budget, &tx, &tokio::runtime::Handle::current()));
+        let worker = tokio::task::spawn_blocking(move || {
+            acquire(&budget, &tx, &tokio::runtime::Handle::current())
+        });
         tokio::task::yield_now().await;
         drop(rx);
-        assert!(tokio::time::timeout(Duration::from_secs(1), worker).await.unwrap().unwrap().is_none());
+        assert!(tokio::time::timeout(Duration::from_secs(1), worker)
+            .await
+            .unwrap()
+            .unwrap()
+            .is_none());
     }
 
     #[tokio::test]
     async fn stream_slot_waits_for_the_previous_encoder_of_the_same_stream() {
-        let (stream, other) = (Arc::new(AtomicBool::new(false)), Arc::new(AtomicBool::new(false)));
+        let (stream, other) = (
+            Arc::new(AtomicBool::new(false)),
+            Arc::new(AtomicBool::new(false)),
+        );
         let held = stream_slot(&stream).await;
         // Another stream is independent.
-        drop(tokio::time::timeout(Duration::from_secs(1), stream_slot(&other)).await.unwrap());
-        assert!(tokio::time::timeout(Duration::from_millis(50), stream_slot(&stream)).await.is_err());
+        drop(
+            tokio::time::timeout(Duration::from_secs(1), stream_slot(&other))
+                .await
+                .unwrap(),
+        );
+        assert!(
+            tokio::time::timeout(Duration::from_millis(50), stream_slot(&stream))
+                .await
+                .is_err()
+        );
         drop(held);
-        drop(tokio::time::timeout(Duration::from_secs(1), stream_slot(&stream)).await.unwrap());
+        drop(
+            tokio::time::timeout(Duration::from_secs(1), stream_slot(&stream))
+                .await
+                .unwrap(),
+        );
     }
 }
 
@@ -1477,7 +1842,9 @@ mod frame_tests {
     use super::*;
     fn image(w: u32, h: u32, pixel: impl Fn(u32, u32) -> [u8; 4]) -> Vec<u8> {
         let pixel = &pixel;
-        (0..h).flat_map(|y| (0..w).flat_map(move |x| pixel(x, y))).collect()
+        (0..h)
+            .flat_map(|y| (0..w).flat_map(move |x| pixel(x, y)))
+            .collect()
     }
 
     #[test]
@@ -1488,7 +1855,7 @@ mod frame_tests {
         assert!(out.chunks(4).all(|p| p == [10, 20, 30, 255]));
         // A 2:1 downscale of alternating black/white columns lands between the two, not on one of them.
         let stripes = image(4, 2, |x, _| if x % 2 == 0 { [0; 4] } else { [255; 4] });
-        let mut out = vec![0; 2 * 1 * 4];
+        let mut out = vec![0; 2 * 4];
         scale_bilinear_argb32(&stripes, 4, 2, &mut out, 2, 1);
         assert!(out.iter().all(|&v| v == 128), "{out:?}");
         // Upscaling interpolates and never reads past the last row/column.
@@ -1506,7 +1873,11 @@ mod frame_tests {
         pad_argb32(&src, 3, 3, &mut out, 4, 4);
         for y in 0..4usize {
             for x in 0..4usize {
-                let expected = if x < 3 && y < 3 { (x + 3 * y + 1) as u8 } else { 0 };
+                let expected = if x < 3 && y < 3 {
+                    (x + 3 * y + 1) as u8
+                } else {
+                    0
+                };
                 assert_eq!(out[(y * 4 + x) * 4], expected, "({x},{y})");
             }
         }
@@ -1531,7 +1902,10 @@ mod frame_tests {
         for (d, (x0, x1, fx)) in (0..4usize).zip(taps_for(4, 7)) {
             for (r, (y0, y1, fy)) in (0..3usize).zip(taps_for(3, 5)) {
                 for c in 0..4 {
-                    let lerp = |row: usize| u32::from(src[row * 28 + x0 * 4 + c]) * (256 - fx) + u32::from(src[row * 28 + x1 * 4 + c]) * fx;
+                    let lerp = |row: usize| {
+                        u32::from(src[row * 28 + x0 * 4 + c]) * (256 - fx)
+                            + u32::from(src[row * 28 + x1 * 4 + c]) * fx
+                    };
                     let expected = ((lerp(y0) * (256 - fy) + lerp(y1) * fy + 32768) >> 16) as u8;
                     assert_eq!(out[(r * 4 + d) * 4 + c], expected, "({d},{r},{c})");
                 }
@@ -1542,7 +1916,8 @@ mod frame_tests {
     fn taps_for(dst_len: u32, src_len: u32) -> Vec<(usize, usize, u32)> {
         (0..dst_len)
             .map(|d| {
-                let pos = ((2 * u64::from(d) + 1) * u64::from(src_len) * 128 / u64::from(dst_len)).saturating_sub(128);
+                let pos = ((2 * u64::from(d) + 1) * u64::from(src_len) * 128 / u64::from(dst_len))
+                    .saturating_sub(128);
                 let first = ((pos >> 8) as usize).min(src_len as usize - 1);
                 let second = (first + 1).min(src_len as usize - 1);
                 (first, second, (pos & 255) as u32)
@@ -1567,71 +1942,147 @@ mod portal_hardware_tests {
         job: Option<tokio::task::JoinHandle<Result<(), String>>>,
     }
     impl Drop for Runner {
-        fn drop(&mut self) { self.stop.store(true, Ordering::Release); self.rx.close(); }
+        fn drop(&mut self) {
+            self.stop.store(true, Ordering::Release);
+            self.rx.close();
+        }
     }
     impl Runner {
         fn start(portal: Arc<crate::portal::PortalSession>, codec: VideoCodec) -> Self {
             let config = Config {
-                input: portal.size(), portal: Some(portal), display: "wayland:portal".into(),
-                output: None, fps: 60, gop: 120, cq: 18, target_bps: 16_000_000,
-                max_bps: 30_000_000, buffer_bits: 500_000, codec,
-                chroma: crate::capture_setting::CHROMA_420, vaapi: true,
+                input: portal.size(),
+                portal: Some(portal),
+                display: "wayland:portal".into(),
+                output: None,
+                fps: 60,
+                gop: 120,
+                cq: 18,
+                target_bps: 16_000_000,
+                max_bps: 30_000_000,
+                buffer_bits: 500_000,
+                codec,
+                chroma: crate::capture_setting::CHROMA_420,
+                abr: false,
+                vaapi: true,
+                cpu: false,
             };
             let (tx, rx) = mpsc::channel(4);
             let stop = Arc::new(AtomicBool::new(false));
             let idr = Arc::new(AtomicBool::new(false));
             let worker_stop = stop.clone();
             let worker_idr = idr.clone();
-            let job = tokio::task::spawn_blocking(move || run(config, tx, worker_stop, worker_idr, Arc::new(Semaphore::new(4))));
-            Self { stop, idr, rx, job: Some(job) }
+            let job = tokio::task::spawn_blocking(move || {
+                run(
+                    config,
+                    tx,
+                    worker_stop,
+                    worker_idr,
+                    Arc::new(Semaphore::new(4)),
+                )
+            });
+            Self {
+                stop,
+                idr,
+                rx,
+                job: Some(job),
+            }
         }
         async fn frame(&mut self) -> Vec<u8> {
-            tokio::time::timeout(Duration::from_secs(10), self.rx.recv()).await.unwrap()
-                .expect("native capture stopped").data
+            tokio::time::timeout(Duration::from_secs(10), self.rx.recv())
+                .await
+                .unwrap()
+                .expect("native capture stopped")
+                .data
         }
         async fn hevc_idr(&mut self) -> Vec<u8> {
             tokio::time::timeout(Duration::from_secs(10), async {
                 loop {
                     let frame = self.frame().await;
                     let nals = crate::hevc::payload(usize::MAX, &frame).unwrap();
-                    if nals.iter().any(|nal| (16..=21).contains(&((nal[0] >> 1) & 63))) { return frame; }
+                    if nals
+                        .iter()
+                        .any(|nal| (16..=21).contains(&((nal[0] >> 1) & 63)))
+                    {
+                        return frame;
+                    }
                 }
-            }).await.expect("requested HEVC IDR did not arrive")
+            })
+            .await
+            .expect("requested HEVC IDR did not arrive")
         }
         async fn finish(mut self) {
             self.stop.store(true, Ordering::Release);
             self.rx.close();
-            tokio::time::timeout(Duration::from_secs(2), self.job.take().unwrap()).await
-                .expect("native encoder did not stop").unwrap().unwrap();
+            tokio::time::timeout(Duration::from_secs(2), self.job.take().unwrap())
+                .await
+                .expect("native encoder did not stop")
+                .unwrap()
+                .unwrap();
         }
     }
     fn decoded_is_black(data: &[u8], codec: VideoCodec) -> bool {
         use std::io::Write;
         use std::process::{Command, Stdio};
-        let format = if codec == VideoCodec::H265 { "hevc" } else { "h264" };
-        let mut decoder = Command::new("ffmpeg").args(["-hide_banner", "-loglevel", "error", "-f", format,
-            "-i", "pipe:0", "-frames:v", "1", "-pix_fmt", "rgb24", "-f", "rawvideo", "pipe:1"])
-            .stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
+        let format = if codec == VideoCodec::H265 {
+            "hevc"
+        } else {
+            "h264"
+        };
+        let mut decoder = Command::new("ffmpeg")
+            .args([
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-f",
+                format,
+                "-i",
+                "pipe:0",
+                "-frames:v",
+                "1",
+                "-pix_fmt",
+                "rgb24",
+                "-f",
+                "rawvideo",
+                "pipe:1",
+            ])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
         // Concurrent writing avoids filling stdin while the decoder is blocked on raw RGB output.
         let mut input = decoder.stdin.take().unwrap();
         let encoded = data.to_vec();
         let writer = std::thread::spawn(move || input.write_all(&encoded));
         let decoded = decoder.wait_with_output().unwrap();
         writer.join().unwrap().unwrap();
-        assert!(decoded.status.success() && !decoded.stdout.is_empty(), "native frame decode failed");
+        assert!(
+            decoded.status.success() && !decoded.stdout.is_empty(),
+            "native frame decode failed"
+        );
         decoded.stdout.iter().all(|&value| value <= 8)
     }
     fn resources() -> (usize, u64) {
         let fds = std::fs::read_dir("/proc/self/fd").unwrap().count();
-        let rss = std::fs::read_to_string("/proc/self/status").unwrap().lines()
-            .find(|line| line.starts_with("VmRSS:")).unwrap().split_whitespace().nth(1).unwrap().parse().unwrap();
+        let rss = std::fs::read_to_string("/proc/self/status")
+            .unwrap()
+            .lines()
+            .find(|line| line.starts_with("VmRSS:"))
+            .unwrap()
+            .split_whitespace()
+            .nth(1)
+            .unwrap()
+            .parse()
+            .unwrap();
         (fds, rss)
     }
     async fn reopen(portal: Arc<crate::portal::PortalSession>) {
         tokio::task::spawn_blocking(move || {
             portal.end();
             assert!(portal.recover(&AtomicBool::new(false)).unwrap());
-        }).await.unwrap();
+        })
+        .await
+        .unwrap();
     }
 
     #[tokio::test]
@@ -1642,18 +2093,27 @@ mod portal_hardware_tests {
             let mut portal = crate::portal::PortalSession::open().unwrap();
             let (locked, watch) = tokio::sync::watch::channel(Some(false));
             portal.test_lock_watch(watch);
-            assert!(matches!(portal.with_dmabuf(&mut None, |_, _| Ok(())).unwrap(), crate::portal::DmaCapture::Frame(())));
+            assert!(matches!(
+                portal.with_dmabuf(&mut None, |_, _| Ok(())).unwrap(),
+                crate::portal::DmaCapture::Frame(())
+            ));
             let (width, height) = portal.size();
             let mut pixels = vec![0; width as usize * height as usize * 4];
             for state in [Some(true), None, Some(false)] {
                 locked.send(state).unwrap();
                 portal.pause();
                 portal.capture(&mut pixels).unwrap();
-                assert!(pixels.chunks_exact(4).any(|p| p[..3].iter().any(|&v| v > 8)),
-                    "healthy snapshot was blanked for lock state {state:?}");
+                assert!(
+                    pixels
+                        .chunks_exact(4)
+                        .any(|p| p[..3].iter().any(|&v| v > 8)),
+                    "healthy snapshot was blanked for lock state {state:?}"
+                );
                 println!("snapshot_lock_state={state:?} valid_frame=true");
             }
-        }).await.unwrap();
+        })
+        .await
+        .unwrap();
     }
 
     // RUST_LOG=info cargo test --release --locked --features wayland,portal,inproc-av portal_five_minute_endurance_with_full_decode -- --ignored --nocapture
@@ -1665,12 +2125,37 @@ mod portal_hardware_tests {
         use std::process::Stdio;
         use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
         let _ = env_logger::builder().is_test(true).try_init();
-        let session = tokio::task::spawn_blocking(crate::portal::PortalSession::open).await.unwrap().unwrap();
+        let session = tokio::task::spawn_blocking(crate::portal::PortalSession::open)
+            .await
+            .unwrap()
+            .unwrap();
         let mut runner = Runner::start(Arc::new(session), VideoCodec::H265);
-        let mut decoder = tokio::process::Command::new("ffmpeg").args([
-            "-hide_banner", "-loglevel", "error", "-nostats", "-threads", "2", "-f", "hevc", "-i", "pipe:0",
-            "-progress", "pipe:1", "-fps_mode", "passthrough", "-f", "null", "/dev/null",
-        ]).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).kill_on_drop(true).spawn().unwrap();
+        let mut decoder = tokio::process::Command::new("ffmpeg")
+            .args([
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-nostats",
+                "-threads",
+                "2",
+                "-f",
+                "hevc",
+                "-i",
+                "pipe:0",
+                "-progress",
+                "pipe:1",
+                "-fps_mode",
+                "passthrough",
+                "-f",
+                "null",
+                "/dev/null",
+            ])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .kill_on_drop(true)
+            .spawn()
+            .unwrap();
         let mut input = decoder.stdin.take().unwrap();
         let mut errors = decoder.stderr.take().unwrap();
         let error_reader = tokio::spawn(async move {
@@ -1678,7 +2163,9 @@ mod portal_hardware_tests {
             let mut buffer = [0; 2048];
             loop {
                 let count = errors.read(&mut buffer).await.unwrap();
-                if count == 0 { return total; }
+                if count == 0 {
+                    return total;
+                }
                 total += count;
             }
         });
@@ -1687,13 +2174,20 @@ mod portal_hardware_tests {
             let mut lines = BufReader::new(output).lines();
             let mut frames = 0u64;
             while let Some(line) = lines.next_line().await.unwrap() {
-                if let Some(count) = line.strip_prefix("frame=") { frames = count.trim().parse().unwrap(); }
+                if let Some(count) = line.strip_prefix("frame=") {
+                    frames = count.trim().parse().unwrap();
+                }
             }
             frames
         });
         let ticks = || {
             let stat = std::fs::read_to_string("/proc/self/stat").unwrap();
-            let fields: Vec<_> = stat.split_once(") ").unwrap().1.split_whitespace().collect();
+            let fields: Vec<_> = stat
+                .split_once(") ")
+                .unwrap()
+                .1
+                .split_whitespace()
+                .collect();
             fields[11].parse::<u64>().unwrap() + fields[12].parse::<u64>().unwrap()
         };
         let hz = unsafe { libc::sysconf(libc::_SC_CLK_TCK) } as f64;
@@ -1703,22 +2197,37 @@ mod portal_hardware_tests {
         let mut frames = 0u64;
         while started.elapsed() < Duration::from_secs(300) {
             let data = runner.frame().await;
-            tokio::time::timeout(Duration::from_secs(5), input.write_all(&data)).await
-                .expect("verification decoder stopped consuming").unwrap();
+            tokio::time::timeout(Duration::from_secs(5), input.write_all(&data))
+                .await
+                .expect("verification decoder stopped consuming")
+                .unwrap();
             frames += 1;
             if last_report.elapsed() >= Duration::from_secs(30) {
                 let now_ticks = ticks();
-                let cpu = (now_ticks - last_ticks) as f64 / hz / last_report.elapsed().as_secs_f64() * 100.0;
+                let cpu =
+                    (now_ticks - last_ticks) as f64 / hz / last_report.elapsed().as_secs_f64()
+                        * 100.0;
                 let (fds, rss_kb) = resources();
                 println!("endurance elapsed_s={} encoded_frames={} cpu_percent={cpu:.2} fds={fds} rss_kb={rss_kb}",
                     started.elapsed().as_secs(), frames);
-                last_ticks = now_ticks; last_report = Instant::now();
+                last_ticks = now_ticks;
+                last_report = Instant::now();
             }
         }
         runner.finish().await;
         drop(input);
-        assert!(tokio::time::timeout(Duration::from_secs(15), decoder.wait()).await.unwrap().unwrap().success());
-        assert_eq!(error_reader.await.unwrap(), 0, "verification decoder reported errors");
+        assert!(
+            tokio::time::timeout(Duration::from_secs(15), decoder.wait())
+                .await
+                .unwrap()
+                .unwrap()
+                .success()
+        );
+        assert_eq!(
+            error_reader.await.unwrap(),
+            0,
+            "verification decoder reported errors"
+        );
         let decoded = progress_reader.await.unwrap();
         assert_eq!(decoded, frames, "decoder lost encoded frames");
         println!("portal_endurance_passed duration_s={:.2} encoded_frames={} decoded_frames={} decode_errors=0",
@@ -1733,7 +2242,10 @@ mod portal_hardware_tests {
     #[ignore = "requires an unlocked Portal desktop, saved consent, VAAPI and FFmpeg decode verification"]
     async fn portal_restart_resources_and_injected_lock_recovery() {
         let _ = env_logger::builder().is_test(true).try_init();
-        let mut session = tokio::task::spawn_blocking(crate::portal::PortalSession::open).await.unwrap().unwrap();
+        let mut session = tokio::task::spawn_blocking(crate::portal::PortalSession::open)
+            .await
+            .unwrap()
+            .unwrap();
         // Inject only the lock observation; actual session closure/recovery and GPU encoding remain real.
         // This does not lock the user's desktop or bypass the isolated-VM acceptance guard.
         let (locked, watch) = tokio::sync::watch::channel(Some(false));
@@ -1741,10 +2253,17 @@ mod portal_hardware_tests {
         let portal = Arc::new(session);
         let mut snapshots = Vec::new();
         for cycle in 0..20 {
-            let codec = if cycle % 2 == 0 { VideoCodec::H264 } else { VideoCodec::H265 };
+            let codec = if cycle % 2 == 0 {
+                VideoCodec::H264
+            } else {
+                VideoCodec::H265
+            };
             let mut runner = Runner::start(portal.clone(), codec);
             let frame = runner.frame().await;
-            assert!(!decoded_is_black(&frame, codec), "restarted stream stayed black");
+            assert!(
+                !decoded_is_black(&frame, codec),
+                "restarted stream stayed black"
+            );
             runner.finish().await;
             reopen(portal.clone()).await;
             let (fds, rss_kb) = resources();
@@ -1753,31 +2272,58 @@ mod portal_hardware_tests {
         }
         let warm = snapshots[3];
         let last = *snapshots.last().unwrap();
-        assert!(last.0 <= warm.0 + 2, "file descriptors grew across reconnects");
-        assert!(last.1 <= warm.1 + 32 * 1024, "resident memory grew across reconnects");
+        assert!(
+            last.0 <= warm.0 + 2,
+            "file descriptors grew across reconnects"
+        );
+        assert!(
+            last.1 <= warm.1 + 32 * 1024,
+            "resident memory grew across reconnects"
+        );
 
         let mut runner = Runner::start(portal.clone(), VideoCodec::H265);
-        assert!(!decoded_is_black(&runner.hevc_idr().await, VideoCodec::H265));
+        assert!(!decoded_is_black(
+            &runner.hevc_idr().await,
+            VideoCodec::H265
+        ));
         for state in [Some(true), None, Some(false)] {
             locked.send(state).unwrap();
             portal.pause();
             runner.idr.store(true, Ordering::Release);
-            assert!(!decoded_is_black(&runner.hevc_idr().await, VideoCodec::H265),
-                "healthy DMA source was blanked for lock state {state:?}");
-            assert!(matches!(portal.with_dmabuf(&mut None, |_, _| Ok(())).unwrap(), crate::portal::DmaCapture::Frame(())));
+            assert!(
+                !decoded_is_black(&runner.hevc_idr().await, VideoCodec::H265),
+                "healthy DMA source was blanked for lock state {state:?}"
+            );
+            assert!(matches!(
+                portal.with_dmabuf(&mut None, |_, _| Ok(())).unwrap(),
+                crate::portal::DmaCapture::Frame(())
+            ));
             println!("dma_lock_state={state:?} valid_frame=true");
         }
         for cycle in 0..3 {
             locked.send(Some(true)).unwrap();
             portal.end();
             runner.idr.store(true, Ordering::Release);
-            assert!(decoded_is_black(&runner.hevc_idr().await, VideoCodec::H265), "closed Portal source did not produce placeholder frame");
-            assert!(matches!(portal.with_dmabuf(&mut None, |_, _| Ok(())).unwrap(), crate::portal::DmaCapture::Cpu));
+            assert!(
+                decoded_is_black(&runner.hevc_idr().await, VideoCodec::H265),
+                "closed Portal source did not produce placeholder frame"
+            );
+            assert!(matches!(
+                portal.with_dmabuf(&mut None, |_, _| Ok(())).unwrap(),
+                crate::portal::DmaCapture::Cpu
+            ));
             locked.send(Some(false)).unwrap();
             let session = portal.clone();
-            tokio::task::spawn_blocking(move || { session.recover(&AtomicBool::new(false)).unwrap(); }).await.unwrap();
+            tokio::task::spawn_blocking(move || {
+                session.recover(&AtomicBool::new(false)).unwrap();
+            })
+            .await
+            .unwrap();
             runner.idr.store(true, Ordering::Release);
-            assert!(!decoded_is_black(&runner.hevc_idr().await, VideoCodec::H265), "desktop did not recover after unlock observation");
+            assert!(
+                !decoded_is_black(&runner.hevc_idr().await, VideoCodec::H265),
+                "desktop did not recover after unlock observation"
+            );
             println!("injected_lock_cycle={} source_closed=true placeholder_black=true same_arc_recovered=true", cycle + 1);
         }
         runner.finish().await;
@@ -1791,30 +2337,54 @@ mod convert_tests {
     use super::*;
 
     extern "C" {
-        fn x264c_test_convert(src: *const u8, pitch: u32, y: *mut u8, u: *mut u8, v: *mut u8,
-                              w: libc::c_int, h: libc::c_int, force_scalar: libc::c_int) -> libc::c_int;
+        fn x264c_test_convert(
+            src: *const u8,
+            pitch: u32,
+            y: *mut u8,
+            u: *mut u8,
+            v: *mut u8,
+            w: libc::c_int,
+            h: libc::c_int,
+            force_scalar: libc::c_int,
+        ) -> libc::c_int;
     }
 
     fn pixels(w: u32, h: u32, seed: u32) -> Vec<u8> {
         let mut s = seed | 1;
         let mut v = vec![0u8; w as usize * h as usize * 4];
-        for p in v.chunks_exact_mut(4) {
-            s ^= s << 13; s ^= s >> 17; s ^= s << 5;
+        for p in v.as_chunks_mut::<4>().0 {
+            s ^= s << 13;
+            s ^= s >> 17;
+            s ^= s << 5;
             p.copy_from_slice(&[s as u8, (s >> 8) as u8, (s >> 16) as u8, 0xFF]);
         }
         v
     }
 
     /// (Y, U, V, whether the AVX2 path ran)
-    fn convert(src: &[u8], pitch: u32, w: u32, h: u32, force_scalar: bool) -> (Vec<u8>, Vec<u8>, Vec<u8>, bool) {
+    fn convert(
+        src: &[u8],
+        pitch: u32,
+        w: u32,
+        h: u32,
+        force_scalar: bool,
+    ) -> (Vec<u8>, Vec<u8>, Vec<u8>, bool) {
         let (mut y, mut u, mut v) = (
             vec![0u8; (w * h) as usize],
             vec![0u8; (w / 2 * (h / 2)) as usize],
             vec![0u8; (w / 2 * (h / 2)) as usize],
         );
         let used = unsafe {
-            x264c_test_convert(src.as_ptr(), pitch, y.as_mut_ptr(), u.as_mut_ptr(), v.as_mut_ptr(),
-                               w as libc::c_int, h as libc::c_int, libc::c_int::from(force_scalar))
+            x264c_test_convert(
+                src.as_ptr(),
+                pitch,
+                y.as_mut_ptr(),
+                u.as_mut_ptr(),
+                v.as_mut_ptr(),
+                w as libc::c_int,
+                h as libc::c_int,
+                libc::c_int::from(force_scalar),
+            )
         };
         (y, u, v, used == 1)
     }
@@ -1842,13 +2412,26 @@ mod convert_tests {
     fn fused_scale_convert_matches_scale_then_convert_byte_for_byte() {
         // Production size, a source whose width is not a multiple of the vector width, and an
         // odd number of destination row pairs.
-        for (sw, sh, dw, dh) in [(2560u32, 1600u32, 1920u32, 1200u32), (1922, 1000, 1366, 710), (1920, 1200, 1280, 800)] {
+        for (sw, sh, dw, dh) in [
+            (2560u32, 1600u32, 1920u32, 1200u32),
+            (1922, 1000, 1366, 710),
+            (1920, 1200, 1280, 800),
+        ] {
             let src = pixels(sw, sh, 0x9E37_79B9 ^ sw);
             let mut scaled = vec![0u8; (dw * dh * 4) as usize];
             scale_bilinear_argb32(&src, sw, sh, &mut scaled, dw, dh);
             let (sy, su, sv, _) = convert(&scaled, dw * 4, dw, dh, true);
             let mut planes = Planes::new(dw, dh);
-            scale_convert_bgrx_i420(&src, sw, sh, &mut planes.y, &mut planes.u, &mut planes.v, dw, dh);
+            scale_convert_bgrx_i420(
+                &src,
+                sw,
+                sh,
+                &mut planes.y,
+                &mut planes.u,
+                &mut planes.v,
+                dw,
+                dh,
+            );
             assert!(sy == planes.y, "Y differs at {sw}x{sh} -> {dw}x{dh}");
             assert!(su == planes.u, "U differs at {sw}x{sh} -> {dw}x{dh}");
             assert!(sv == planes.v, "V differs at {sw}x{sh} -> {dw}x{dh}");
@@ -1862,7 +2445,14 @@ mod pipeline_tests {
 
     fn frame(planes: Planes, sem: &Arc<Semaphore>) -> QueuedFrame {
         let permit = sem.clone().try_acquire_owned().expect("permit");
-        QueuedFrame { planes, force_idr: 0, permit, captured_at: Instant::now(), capture_us: 0, convert_us: 0 }
+        QueuedFrame {
+            planes,
+            force_idr: 0,
+            permit,
+            captured_at: Instant::now(),
+            capture_us: 0,
+            convert_us: 0,
+        }
     }
 
     #[test]
@@ -1870,7 +2460,10 @@ mod pipeline_tests {
         let queue = FrameQueue::new();
         queue.close();
         let sem = Arc::new(Semaphore::new(8));
-        assert!(matches!(queue.push(frame(Planes::new(2, 2), &sem)), PushOutcome::Closed(_)));
+        assert!(matches!(
+            queue.push(frame(Planes::new(2, 2), &sem)),
+            PushOutcome::Closed(_)
+        ));
     }
 
     #[test]
@@ -1887,7 +2480,9 @@ mod pipeline_tests {
                 if cap_stop.load(Ordering::Relaxed) {
                     break;
                 }
-                let Some(planes) = cap_pool.take(2, 2, &cap_stop) else { break; };
+                let Some(planes) = cap_pool.take(2, 2, &cap_stop) else {
+                    break;
+                };
                 match cap_queue.push(frame(planes, &sem)) {
                     PushOutcome::Stored(old) => {
                         if let Some(old) = old {
@@ -1906,7 +2501,10 @@ mod pipeline_tests {
         std::thread::sleep(Duration::from_millis(50));
         queue.close();
         stop.store(true, Ordering::Relaxed);
-        assert!(done_rx.recv_timeout(Duration::from_secs(2)).is_ok(), "capture side must exit");
+        assert!(
+            done_rx.recv_timeout(Duration::from_secs(2)).is_ok(),
+            "capture side must exit"
+        );
         capture.join().unwrap();
     }
 }
@@ -1926,8 +2524,12 @@ mod stats_tests {
 /// No raw-video pipe, CPU mapping or host upload. The C lease owns the buffer
 /// until vaapi_packet synchronizes encoding and copies only the compressed packet.
 fn run_wayland_vaapi(
-    config: &Config, engine: &SafeVaapiEngine, units: mpsc::Sender<EncodedUnit>,
-    stop: Arc<AtomicBool>, idr: Arc<AtomicBool>, budget: Arc<Semaphore>,
+    config: &Config,
+    engine: &SafeVaapiEngine,
+    units: mpsc::Sender<EncodedUnit>,
+    stop: Arc<AtomicBool>,
+    idr: Arc<AtomicBool>,
+    budget: Arc<Semaphore>,
 ) -> Result<(), String> {
     let handle = tokio::runtime::Handle::current();
     let _capture = crate::wayland::DmaCaptureGuard::acquire()?;
@@ -1935,18 +2537,31 @@ fn run_wayland_vaapi(
     let mut schedule = crate::wayland::pacing::CaptureSchedule::new(Instant::now(), config.fps);
     let mut pacing = crate::wayland::pacing::FramePacing::new(dynamic);
     let mut report = Instant::now();
-    let (mut changed_count, mut keepalive_count) = (0u64,0u64);
+    let (mut changed_count, mut keepalive_count) = (0u64, 0u64);
     while !stop.load(Ordering::Relaxed) && !units.is_closed() {
         while Instant::now() < schedule.deadline() {
-            if stop.load(Ordering::Relaxed) || units.is_closed() { return Ok(()); }
-            std::thread::sleep(schedule.deadline().saturating_duration_since(Instant::now()).min(Duration::from_millis(10)));
+            if stop.load(Ordering::Relaxed) || units.is_closed() {
+                return Ok(());
+            }
+            std::thread::sleep(
+                schedule
+                    .deadline()
+                    .saturating_duration_since(Instant::now())
+                    .min(Duration::from_millis(10)),
+            );
         }
-        let Some(permit) = acquire(&budget, &units, &handle) else { return Ok(()); };
+        let Some(permit) = acquire(&budget, &units, &handle) else {
+            return Ok(());
+        };
         let mut packet = None;
         let captured = crate::wayland::capture_dmabuf(pacing.wait_for_damage(), |frame| {
-            if (frame.width,frame.height) != config.input { return Err("Wayland DMA-BUF size changed".into()); }
+            if (frame.width, frame.height) != config.input {
+                return Err("Wayland DMA-BUF size changed".into());
+            }
             let code = unsafe { vaapi_import_frame(engine.0, frame) };
-            if code != 0 { return Err(format!("Wayland VAAPI DMA-BUF import failed ({code})")); }
+            if code != 0 {
+                return Err(format!("Wayland VAAPI DMA-BUF import failed ({code})"));
+            }
             packet = Some(vaapi_packet(engine, &idr)?);
             Ok(())
         })?;
@@ -1958,20 +2573,32 @@ fn run_wayland_vaapi(
         } else if pacing.keepalive_due(Instant::now(), idr.load(Ordering::Acquire)) {
             // The last imported surface remains leased by VAAPI. The pending
             // screencopy targets the alternate buffer, so this surface is stable.
-            packet = Some(vaapi_packet(engine,&idr)?);
+            packet = Some(vaapi_packet(engine, &idr)?);
             keepalive_count += 1;
         }
         let mut encoded = false;
         if let Some(data) = packet {
             if !data.is_empty() {
-                if units.blocking_send(EncodedUnit {data,is_new:captured,permit,completed_at:Instant::now()}).is_err() { return Ok(()); }
+                if units
+                    .blocking_send(EncodedUnit {
+                        data,
+                        is_new: captured,
+                        permit,
+                        completed_at: Instant::now(),
+                    })
+                    .is_err()
+                {
+                    return Ok(());
+                }
                 pacing.sent(Instant::now());
                 encoded = true;
             }
         }
         if report.elapsed() >= Duration::from_secs(5) {
             log::info!("Wayland VAAPI cadence: seconds={:.2} changed={} keepalive={} target_fps={} dynamic={}",report.elapsed().as_secs_f64(),changed_count,keepalive_count,config.fps,dynamic);
-            report=Instant::now(); changed_count=0; keepalive_count=0;
+            report = Instant::now();
+            changed_count = 0;
+            keepalive_count = 0;
         }
         schedule.completed(Instant::now(), encoded);
     }
@@ -1982,7 +2609,9 @@ fn run_wayland_vaapi(
 mod wayland_hardware_tests {
     use super::*;
     fn is_idr(bytes: &[u8]) -> bool {
-        bytes.windows(4).any(|w| w[..3] == [0,0,1] && w[3] & 31 == 5)
+        bytes
+            .windows(4)
+            .any(|w| w[..3] == [0, 0, 1] && w[3] & 31 == 5)
     }
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     #[ignore = "requires an unlocked wlroots desktop, UU_WAYLAND_DMABUF=1, Intel/AMD VAAPI and a static test scene"]
@@ -1990,10 +2619,21 @@ mod wayland_hardware_tests {
         assert_eq!(std::env::var("UU_WAYLAND_DMABUF").as_deref(), Ok("1"));
         let input = crate::wayland::init().expect("native Wayland desktop");
         let config = || Config {
-            portal: None, display: "wayland:native".into(), input, output: None,
-            fps: 30, gop: 15, cq: 26, target_bps: 1_500_000, max_bps: 2_000_000,
-            buffer_bits: 250_000, codec: crate::capture_setting::VideoCodec::H264,
-            chroma: crate::capture_setting::CHROMA_420, vaapi: true,
+            portal: None,
+            display: "wayland:native".into(),
+            input,
+            output: None,
+            fps: 30,
+            gop: 15,
+            cq: 26,
+            target_bps: 1_500_000,
+            max_bps: 2_000_000,
+            buffer_bits: 250_000,
+            codec: crate::capture_setting::VideoCodec::H264,
+            chroma: crate::capture_setting::CHROMA_420,
+            abr: false,
+            vaapi: true,
+            cpu: false,
         };
         let fd_count = || std::fs::read_dir("/proc/self/fd").unwrap().count();
         let mut warm_fds = 0;
@@ -2005,12 +2645,17 @@ mod wayland_hardware_tests {
                 let (config, stop, idr) = (config(), stop.clone(), idr.clone());
                 move || run(config, tx, stop, idr, Arc::new(Semaphore::new(4)))
             });
-            let first = tokio::time::timeout(Duration::from_secs(5), rx.recv()).await.unwrap().unwrap();
+            let first = tokio::time::timeout(Duration::from_secs(5), rx.recv())
+                .await
+                .unwrap()
+                .unwrap();
             assert!(is_idr(&first.data), "restart must start with an IDR");
             drop(first);
             // Drain initial output damage, then request an IDR during the idle wait.
             let deadline = Instant::now() + Duration::from_secs(3);
-            while let Ok(Some(frame)) = tokio::time::timeout(Duration::from_millis(100), rx.recv()).await {
+            while let Ok(Some(frame)) =
+                tokio::time::timeout(Duration::from_millis(100), rx.recv()).await
+            {
                 drop(frame);
                 assert!(Instant::now() < deadline, "test scene is not static");
             }
@@ -2018,18 +2663,36 @@ mod wayland_hardware_tests {
             let forced = tokio::time::timeout(Duration::from_millis(500), async {
                 loop {
                     let frame = rx.recv().await.expect("encoder ended before requested IDR");
-                    if is_idr(&frame.data) { return frame; }
+                    if is_idr(&frame.data) {
+                        return frame;
+                    }
                 }
-            }).await.expect("idle PLI/IDR request must not wait for screen damage");
+            })
+            .await
+            .expect("idle PLI/IDR request must not wait for screen damage");
             drop(forced);
-            assert!(tokio::time::timeout(Duration::from_millis(75), rx.recv()).await.is_err(), "test scene must remain idle");
+            assert!(
+                tokio::time::timeout(Duration::from_millis(75), rx.recv())
+                    .await
+                    .is_err(),
+                "test scene must remain idle"
+            );
             // Stop with a damage-only screencopy outstanding; cleanup must not hang.
             stop.store(true, Ordering::Release);
             drop(rx);
-            tokio::time::timeout(Duration::from_secs(2), job).await.unwrap().unwrap().unwrap();
-            if cycle == 1 { warm_fds = fd_count(); }
+            tokio::time::timeout(Duration::from_secs(2), job)
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap();
+            if cycle == 1 {
+                warm_fds = fd_count();
+            }
         }
-        assert!(fd_count() <= warm_fds + 4, "file descriptors grew across native restarts");
+        assert!(
+            fd_count() <= warm_fds + 4,
+            "file descriptors grew across native restarts"
+        );
         println!("native_wayland_restart_pass cycles=10 idle_idr=true cancellation_bounded=true fd_growth={}", fd_count() as isize - warm_fds as isize);
     }
 }

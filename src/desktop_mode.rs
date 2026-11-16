@@ -4,13 +4,20 @@
 //! Disable with UU_DESKTOP_RESIZE=0 (the viewer choice then scales the encoded stream instead).
 
 use std::process::Command;
-use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Mutex;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Request { Native, Size(u32, u32) }
+pub enum Request {
+    Native,
+    Size(u32, u32),
+}
 
-struct Original { display: String, output: String, mode: String }
+struct Original {
+    display: String,
+    output: String,
+    mode: String,
+}
 
 static ORIGINAL: Mutex<Option<Original>> = Mutex::new(None);
 static STREAMS: AtomicUsize = AtomicUsize::new(0);
@@ -19,12 +26,17 @@ static STREAMS: AtomicUsize = AtomicUsize::new(0);
 const MAX_SIDE: u32 = 4096;
 const MIN_SIZE: (u32, u32) = (640, 480);
 
-pub fn enabled() -> bool { std::env::var("UU_DESKTOP_RESIZE").map_or(true, |v| v != "0") }
+pub fn enabled() -> bool {
+    std::env::var("UU_DESKTOP_RESIZE").map_or(true, |v| v != "0")
+}
 
 /// Keeps the changed mode while any desktop stream runs; the last one restores it.
 pub struct StreamGuard;
 impl StreamGuard {
-    pub fn new() -> Self { STREAMS.fetch_add(1, Ordering::SeqCst); Self }
+    pub fn new() -> Self {
+        STREAMS.fetch_add(1, Ordering::SeqCst);
+        Self
+    }
 }
 impl Drop for StreamGuard {
     fn drop(&mut self) {
@@ -32,7 +44,9 @@ impl Drop for StreamGuard {
             // xrandr blocks; never run it on the async runtime thread dropping the stream.
             std::thread::spawn(|| {
                 std::thread::sleep(std::time::Duration::from_secs(2));
-                if STREAMS.load(Ordering::SeqCst) == 0 { restore(); }
+                if STREAMS.load(Ordering::SeqCst) == 0 {
+                    restore();
+                }
             });
         }
     }
@@ -42,34 +56,60 @@ impl Drop for StreamGuard {
 /// use, or None when nothing changed hands (the caller keeps encoder scaling as the fallback).
 pub fn apply(display: &str, request: Request) -> Option<(u32, u32)> {
     match request {
-        Request::Native => { restore(); crate::capture::x11_size() },
+        Request::Native => {
+            restore();
+            crate::capture::x11_size()
+        }
         Request::Size(w, h) => {
             let target = fit(w, h)?;
             match switch(display, target) {
                 Ok(()) => crate::capture::x11_size(),
-                Err(error) => { log::warn!("Desktop resolution change to {}x{} failed: {}", target.0, target.1, error); None },
+                Err(error) => {
+                    log::warn!(
+                        "Desktop resolution change to {}x{} failed: {}",
+                        target.0,
+                        target.1,
+                        error
+                    );
+                    None
+                }
             }
-        },
+        }
     }
 }
 
 /// Even sides within MIN_SIZE..=MAX_SIDE, keeping the aspect ratio when scaled down.
 fn fit(w: u32, h: u32) -> Option<(u32, u32)> {
-    if w == 0 || h == 0 { return None; }
+    if w == 0 || h == 0 {
+        return None;
+    }
     let scale = (f64::from(MAX_SIDE) / f64::from(w.max(h))).min(1.0);
-    let (w, h) = ((f64::from(w) * scale).round() as u32, (f64::from(h) * scale).round() as u32);
+    let (w, h) = (
+        (f64::from(w) * scale).round() as u32,
+        (f64::from(h) * scale).round() as u32,
+    );
     Some((w.max(MIN_SIZE.0) & !1, h.max(MIN_SIZE.1) & !1))
 }
 
 fn switch(display: &str, target: (u32, u32)) -> Result<(), String> {
     let state = query(display)?;
-    if state.current == Some(target) { return Ok(()); }
+    if state.current == Some(target) {
+        return Ok(());
+    }
     {
         let mut original = ORIGINAL.lock().unwrap();
         if original.is_none() {
             let mode = state.current_mode.clone().ok_or("current mode unknown")?;
-            log::info!("Desktop resolution: saving original mode {} on {}", mode, state.output);
-            *original = Some(Original { display: display.into(), output: state.output.clone(), mode });
+            log::info!(
+                "Desktop resolution: saving original mode {} on {}",
+                mode,
+                state.output
+            );
+            *original = Some(Original {
+                display: display.into(),
+                output: state.output.clone(),
+                mode,
+            });
         }
     }
     let mode = match state.modes.iter().find(|(_, size)| *size == target) {
@@ -82,19 +122,34 @@ fn switch(display: &str, target: (u32, u32)) -> Result<(), String> {
             let _ = xrandr(display, &args);
             xrandr(display, &["--addmode", &state.output, &name])?;
             name
-        },
+        }
     };
     set_mode(display, &state.output, &mode, target)?;
-    log::info!("Desktop resolution changed to {}x{} ({})", target.0, target.1, mode);
+    log::info!(
+        "Desktop resolution changed to {}x{} ({})",
+        target.0,
+        target.1,
+        mode
+    );
     Ok(())
 }
 
 /// Restores the mode saved before the first change, if any.
 pub fn restore() {
-    let Some(original) = ORIGINAL.lock().unwrap().take() else { return; };
-    let size = query(&original.display).ok().and_then(|state| state.modes.into_iter().find(|(name, _)| *name == original.mode).map(|(_, size)| size));
-    match size.ok_or_else(|| "original mode no longer listed".to_owned())
-        .and_then(|size| set_mode(&original.display, &original.output, &original.mode, size)) {
+    let Some(original) = ORIGINAL.lock().unwrap().take() else {
+        return;
+    };
+    let size = query(&original.display).ok().and_then(|state| {
+        state
+            .modes
+            .into_iter()
+            .find(|(name, _)| *name == original.mode)
+            .map(|(_, size)| size)
+    });
+    match size
+        .ok_or_else(|| "original mode no longer listed".to_owned())
+        .and_then(|size| set_mode(&original.display, &original.output, &original.mode, size))
+    {
         Ok(()) => log::info!("Desktop resolution restored to {}", original.mode),
         Err(error) => log::warn!("Desktop resolution restore failed: {}", error),
     }
@@ -106,42 +161,95 @@ fn set_mode(display: &str, output: &str, mode: &str, size: (u32, u32)) -> Result
     for _ in 0..3 {
         xrandr(display, &["--output", output, "--mode", mode])?;
         std::thread::sleep(std::time::Duration::from_millis(1500));
-        if query(display)?.current == Some(size) { return Ok(()); }
+        if query(display)?.current == Some(size) {
+            return Ok(());
+        }
     }
     Err(format!("{output} did not keep {mode}"))
 }
 
 fn xrandr(display: &str, args: &[&str]) -> Result<String, String> {
-    let output = Command::new("xrandr").arg("--display").arg(display).args(args).output()
+    let output = Command::new("xrandr")
+        .arg("--display")
+        .arg(display)
+        .args(args)
+        .output()
         .map_err(|e| format!("xrandr unavailable: {}", e.kind()))?;
-    if !output.status.success() { return Err(format!("xrandr {} exited with {}", args.first().unwrap_or(&""), output.status)); }
+    if !output.status.success() {
+        return Err(format!(
+            "xrandr {} exited with {}",
+            args.first().unwrap_or(&""),
+            output.status
+        ));
+    }
     Ok(String::from_utf8_lossy(&output.stdout).into_owned())
 }
 
-struct State { output: String, current: Option<(u32, u32)>, current_mode: Option<String>, modes: Vec<(String, (u32, u32))> }
+struct State {
+    output: String,
+    current: Option<(u32, u32)>,
+    current_mode: Option<String>,
+    modes: Vec<(String, (u32, u32))>,
+}
 
-fn query(display: &str) -> Result<State, String> { parse(&xrandr(display, &["--query"])?).ok_or_else(|| "no connected output".into()) }
+fn query(display: &str) -> Result<State, String> {
+    parse(&xrandr(display, &["--query"])?).ok_or_else(|| "no connected output".into())
+}
 
 /// The primary connected output (else the first connected one with a mode) and its mode list.
 fn parse(text: &str) -> Option<State> {
     let mut outputs: Vec<(bool, State)> = Vec::new();
     for line in text.lines() {
         if let Some(rest) = line.strip_prefix("   ") {
-            let Some((_, state)) = outputs.last_mut() else { continue; };
+            let Some((_, state)) = outputs.last_mut() else {
+                continue;
+            };
             let mut parts = rest.split_whitespace();
-            let Some(name) = parts.next() else { continue; };
-            let Some(size) = mode_size(name) else { continue; };
-            if parts.any(|rate| rate.contains('*')) { state.current = Some(size); state.current_mode = Some(name.into()); }
+            let Some(name) = parts.next() else {
+                continue;
+            };
+            let Some(size) = mode_size(name) else {
+                continue;
+            };
+            if parts.any(|rate| rate.contains('*')) {
+                state.current = Some(size);
+                state.current_mode = Some(name.into());
+            }
             state.modes.push((name.into(), size));
         } else if !line.starts_with(' ') {
             let mut parts = line.split_whitespace();
-            let (Some(name), Some("connected")) = (parts.next(), parts.next()) else { outputs.push((false, State { output: String::new(), current: None, current_mode: None, modes: Vec::new() })); continue; };
+            let (Some(name), Some("connected")) = (parts.next(), parts.next()) else {
+                outputs.push((
+                    false,
+                    State {
+                        output: String::new(),
+                        current: None,
+                        current_mode: None,
+                        modes: Vec::new(),
+                    },
+                ));
+                continue;
+            };
             let primary = line.contains(" connected primary ");
-            outputs.push((primary, State { output: name.into(), current: None, current_mode: None, modes: Vec::new() }));
+            outputs.push((
+                primary,
+                State {
+                    output: name.into(),
+                    current: None,
+                    current_mode: None,
+                    modes: Vec::new(),
+                },
+            ));
         }
     }
-    let mut connected: Vec<(bool, State)> = outputs.into_iter().filter(|(_, s)| !s.output.is_empty() && s.current.is_some()).collect();
-    let index = connected.iter().position(|(primary, _)| *primary).unwrap_or(0);
+    let mut connected: Vec<(bool, State)> = outputs
+        .into_iter()
+        .filter(|(_, s)| !s.output.is_empty() && s.current.is_some())
+        .collect();
+    let index = connected
+        .iter()
+        .position(|(primary, _)| *primary)
+        .unwrap_or(0);
     (index < connected.len()).then(|| connected.swap_remove(index).1)
 }
 
@@ -155,24 +263,53 @@ fn mode_size(name: &str) -> Option<(u32, u32)> {
 /// VESA CVT reduced-blanking (v1) timings: 60 Hz, or 30 Hz when 60 Hz exceeds an HDMI 2.0
 /// pixel clock (virtual/forced connectors on integrated GPUs reject faster modes).
 fn cvt_reduced(w: u32, h: u32) -> (String, Vec<String>) {
-    const H_BLANK: u32 = 160; const H_SYNC: u32 = 32; const H_FRONT: u32 = 48;
-    const V_FRONT: u32 = 3; const MIN_V_BACK: u32 = 6; const MIN_VBLANK_US: f64 = 460.0;
-    let v_sync = match (w * 3 == h * 4, w * 9 == h * 16, w * 10 == h * 16, w * 4 == h * 5, w * 9 == h * 15) {
-        (true, ..) => 4, (_, true, ..) => 5, (_, _, true, ..) => 6, (_, _, _, true, _) | (.., true) => 7, _ => 10,
+    const H_BLANK: u32 = 160;
+    const H_SYNC: u32 = 32;
+    const H_FRONT: u32 = 48;
+    const V_FRONT: u32 = 3;
+    const MIN_V_BACK: u32 = 6;
+    const MIN_VBLANK_US: f64 = 460.0;
+    let v_sync = match (
+        w * 3 == h * 4,
+        w * 9 == h * 16,
+        w * 10 == h * 16,
+        w * 4 == h * 5,
+        w * 9 == h * 15,
+    ) {
+        (true, ..) => 4,
+        (_, true, ..) => 5,
+        (_, _, true, ..) => 6,
+        (_, _, _, true, _) | (.., true) => 7,
+        _ => 10,
     };
     let timing = |refresh: f64| {
         let h_period = (1_000_000.0 / refresh - MIN_VBLANK_US) / f64::from(h);
         let vbi = ((MIN_VBLANK_US / h_period) as u32 + 1).max(V_FRONT + v_sync + MIN_V_BACK);
         let (total_h, total_v) = (w + H_BLANK, h + vbi);
-        let clock = (refresh * f64::from(total_h) * f64::from(total_v) / 1_000_000.0 / 0.25).floor() * 0.25;
+        let clock =
+            (refresh * f64::from(total_h) * f64::from(total_v) / 1_000_000.0 / 0.25).floor() * 0.25;
         (clock, total_h, total_v)
     };
     let (mut refresh, mut t) = (60, timing(60.0));
-    if t.0 > 590.0 { refresh = 30; t = timing(30.0); }
+    if t.0 > 590.0 {
+        refresh = 30;
+        t = timing(30.0);
+    }
     let (clock, total_h, total_v) = t;
     let name = format!("{w}x{h}_{refresh}R");
-    let timings = [format!("{clock:.2}"), w.to_string(), (w + H_FRONT).to_string(), (w + H_FRONT + H_SYNC).to_string(), total_h.to_string(),
-        h.to_string(), (h + V_FRONT).to_string(), (h + V_FRONT + v_sync).to_string(), total_v.to_string(), "+hsync".into(), "-vsync".into()];
+    let timings = [
+        format!("{clock:.2}"),
+        w.to_string(),
+        (w + H_FRONT).to_string(),
+        (w + H_FRONT + H_SYNC).to_string(),
+        total_h.to_string(),
+        h.to_string(),
+        (h + V_FRONT).to_string(),
+        (h + V_FRONT + v_sync).to_string(),
+        total_v.to_string(),
+        "+hsync".into(),
+        "-vsync".into(),
+    ];
     (name, timings.into())
 }
 
@@ -185,9 +322,15 @@ mod tests {
         // `cvt -r 1920 1080`: 138.50 1920 1968 2000 2080 1080 1083 1088 1111 +hsync -vsync
         let (name, t) = cvt_reduced(1920, 1080);
         assert_eq!(name, "1920x1080_60R");
-        assert_eq!(t.join(" "), "138.50 1920 1968 2000 2080 1080 1083 1088 1111 +hsync -vsync");
+        assert_eq!(
+            t.join(" "),
+            "138.50 1920 1968 2000 2080 1080 1083 1088 1111 +hsync -vsync"
+        );
         // `cvt -r 2560 1600`: 268.50 2560 2608 2640 2720 1600 1603 1609 1646
-        assert_eq!(cvt_reduced(2560, 1600).1.join(" "), "268.50 2560 2608 2640 2720 1600 1603 1609 1646 +hsync -vsync");
+        assert_eq!(
+            cvt_reduced(2560, 1600).1.join(" "),
+            "268.50 2560 2608 2640 2720 1600 1603 1609 1646 +hsync -vsync"
+        );
         // 4K at 60 Hz needs 533 MHz (under the cap); a larger desktop drops to 30 Hz.
         assert_eq!(cvt_reduced(3840, 2160).0, "3840x2160_60R");
         assert_eq!(cvt_reduced(4096, 2560).0, "4096x2560_30R");

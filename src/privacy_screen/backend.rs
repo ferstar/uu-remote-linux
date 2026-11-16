@@ -22,15 +22,24 @@ pub trait Backend: Send + Sync {
     fn leave(&self, data: &serde_json::Value) -> Result<(), String>;
     /// Recompute `Entered::pointer_region` after the virtual output was recreated. None keeps
     /// the stored region (backends without a virtual output, or a layout not settled yet).
-    fn refresh_pointer_region(&self) -> Option<[f64; 4]> { None }
+    fn refresh_pointer_region(&self) -> Option<[f64; 4]> {
+        None
+    }
 }
 
 /// The backend for this session, if the desktop has one.
 pub fn detect() -> Option<&'static dyn Backend> {
-    if cfg!(test) { return None; }
-    if super::kde::Kde::detected() { return Some(&super::kde::Kde); }
+    if cfg!(test) {
+        return None;
+    }
+    if super::kde::Kde::detected() {
+        return Some(&super::kde::Kde);
+    }
     None
 }
 pub fn named(name: &str) -> Option<&'static dyn Backend> {
-    match name { super::kde::NAME => Some(&super::kde::Kde), _ => None }
+    match name {
+        super::kde::NAME => Some(&super::kde::Kde),
+        _ => None,
+    }
 }

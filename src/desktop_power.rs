@@ -19,8 +19,16 @@ mod native {
     impl Handle {
         pub fn acquire(gnome: bool) -> Result<Self, String> {
             let mut error = 0;
-            let pointer = unsafe { if gnome { uu_desktop_idle_inhibitor_acquire(&mut error) } else { uu_desktop_screensaver_inhibitor_acquire(&mut error) } };
-            NonNull::new(pointer).map(Self).ok_or_else(|| super::error("idle inhibition", error))
+            let pointer = unsafe {
+                if gnome {
+                    uu_desktop_idle_inhibitor_acquire(&mut error)
+                } else {
+                    uu_desktop_screensaver_inhibitor_acquire(&mut error)
+                }
+            };
+            NonNull::new(pointer)
+                .map(Self)
+                .ok_or_else(|| super::error("idle inhibition", error))
         }
 
         pub fn wake() -> Result<(), String> {
@@ -38,7 +46,9 @@ mod native {
 /// Set GNOME's display power-save mode to on. This does not unlock the session or change
 /// lock-screen policy. Session-bus setup and each method call are bounded to three seconds.
 pub fn wake() -> Result<(), String> {
-    if crate::privacy_screen::active() { return Ok(()); }
+    if crate::privacy_screen::active() {
+        return Ok(());
+    }
     if !gnome_portal_active() {
         return Ok(());
     }
@@ -75,7 +85,9 @@ impl IdleInhibitor {
         }
         #[cfg(all(target_os = "linux", feature = "portal"))]
         {
-            native::Handle::acquire(!kde).map(|handle| Self { _handle: Some(handle) })
+            native::Handle::acquire(!kde).map(|handle| Self {
+                _handle: Some(handle),
+            })
         }
         #[cfg(not(all(target_os = "linux", feature = "portal")))]
         {
@@ -84,17 +96,27 @@ impl IdleInhibitor {
     }
 }
 
-fn gnome_portal_active() -> bool { portal_desktop_is("gnome") }
+fn gnome_portal_active() -> bool {
+    portal_desktop_is("gnome")
+}
 
 fn portal_desktop_is(name: &str) -> bool {
-    let matches = std::env::var("XDG_CURRENT_DESKTOP").unwrap_or_default().split(':')
+    let matches = std::env::var("XDG_CURRENT_DESKTOP")
+        .unwrap_or_default()
+        .split(':')
         .any(|desktop| desktop.eq_ignore_ascii_case(name));
-    matches && crate::desktop_backend::detect().is_ok_and(|backend| backend == crate::desktop_backend::DesktopBackend::Portal)
+    matches
+        && crate::desktop_backend::detect()
+            .is_ok_and(|backend| backend == crate::desktop_backend::DesktopBackend::Portal)
 }
 
 #[cfg(all(target_os = "linux", feature = "portal"))]
 fn check(operation: &str, code: i32) -> Result<(), String> {
-    if code == 0 { Ok(()) } else { Err(error(operation, code)) }
+    if code == 0 {
+        Ok(())
+    } else {
+        Err(error(operation, code))
+    }
 }
 
 #[cfg(all(target_os = "linux", feature = "portal"))]

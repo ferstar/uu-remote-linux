@@ -4,7 +4,12 @@
 
 #[cfg(uu_gtk)]
 extern "C" {
-    fn uu_login_ui_start(name: *const libc::c_char, os: *const libc::c_char, cpu: *const libc::c_char, gpu: *const libc::c_char) -> libc::c_int;
+    fn uu_login_ui_start(
+        name: *const libc::c_char,
+        os: *const libc::c_char,
+        cpu: *const libc::c_char,
+        gpu: *const libc::c_char,
+    ) -> libc::c_int;
     fn uu_login_ui_set_qr(rgba: *const u8, edge: libc::c_int);
     fn uu_login_ui_set_status(text: *const libc::c_char, kind: libc::c_int);
     fn uu_login_ui_set_done(text: *const libc::c_char);
@@ -15,15 +20,29 @@ extern "C" {
 }
 
 #[derive(Clone, Copy)]
-pub enum Tone { Info = 0, Ok = 1, Error = 2 }
+pub enum Tone {
+    Info = 0,
+    Ok = 1,
+    Error = 2,
+}
 
-pub struct LoginUi { shown: bool, attached: bool }
+pub struct LoginUi {
+    shown: bool,
+    attached: bool,
+}
 
 #[cfg(uu_gtk)]
-fn cstr(s: &str) -> std::ffi::CString { std::ffi::CString::new(s.replace('\0', "")).unwrap_or_default() }
+fn cstr(s: &str) -> std::ffi::CString {
+    std::ffi::CString::new(s.replace('\0', "")).unwrap_or_default()
+}
 
 impl LoginUi {
-    pub fn none() -> Self { LoginUi { shown: false, attached: false } }
+    pub fn none() -> Self {
+        LoginUi {
+            shown: false,
+            attached: false,
+        }
+    }
 
     /// Opens the window when built with GTK and a display is present; falls back silently otherwise.
     #[allow(unused_variables)]
@@ -32,7 +51,10 @@ impl LoginUi {
         if std::env::var_os("DISPLAY").is_some() || std::env::var_os("WAYLAND_DISPLAY").is_some() {
             let (n, o, c, g) = (cstr(name), cstr(os), cstr(cpu), cstr(gpu));
             if unsafe { uu_login_ui_start(n.as_ptr(), o.as_ptr(), c.as_ptr(), g.as_ptr()) } == 0 {
-                return LoginUi { shown: true, attached: false };
+                return LoginUi {
+                    shown: true,
+                    attached: false,
+                };
             }
             eprintln!("Login window unavailable; using the terminal QR code");
         }
@@ -44,60 +66,100 @@ impl LoginUi {
     /// handle never closes the shared window.
     pub fn attached() -> Self {
         #[cfg(uu_gtk)]
-        { unsafe { uu_login_ui_start(std::ptr::null(), std::ptr::null(), std::ptr::null(), std::ptr::null()) }; LoginUi { shown: true, attached: true } }
+        {
+            unsafe {
+                uu_login_ui_start(
+                    std::ptr::null(),
+                    std::ptr::null(),
+                    std::ptr::null(),
+                    std::ptr::null(),
+                )
+            };
+            LoginUi {
+                shown: true,
+                attached: true,
+            }
+        }
         #[cfg(not(uu_gtk))]
-        LoginUi { shown: false, attached: true }
+        LoginUi {
+            shown: false,
+            attached: true,
+        }
     }
-    pub fn quiet(&self) -> bool { self.attached }
-    pub fn shown(&self) -> bool { self.shown }
+    pub fn quiet(&self) -> bool {
+        self.attached
+    }
+    pub fn shown(&self) -> bool {
+        self.shown
+    }
 
     #[allow(unused_variables)]
     pub fn qr(&self, rgba: &[u8], edge: usize) {
         #[cfg(uu_gtk)]
-        if self.shown && rgba.len() == edge * edge * 4 { unsafe { uu_login_ui_set_qr(rgba.as_ptr(), edge as libc::c_int) } }
+        if self.shown && rgba.len() == edge * edge * 4 {
+            unsafe { uu_login_ui_set_qr(rgba.as_ptr(), edge as libc::c_int) }
+        }
     }
 
     #[allow(unused_variables)]
     /// Show or hide the 刷新二维码 button (a failed QR waits for the user, like the official client).
     pub fn offer_refresh(&self, visible: bool) {
         #[cfg(uu_gtk)]
-        if self.shown { unsafe { uu_login_ui_offer_refresh(libc::c_int::from(visible)) } }
+        if self.shown {
+            unsafe { uu_login_ui_offer_refresh(libc::c_int::from(visible)) }
+        }
         #[cfg(not(uu_gtk))]
         let _ = visible;
     }
     /// The user clicked 刷新二维码 since the last call.
     pub fn take_refresh(&self) -> bool {
         #[cfg(uu_gtk)]
-        if self.shown { return unsafe { uu_login_ui_take_refresh() } != 0; }
+        if self.shown {
+            return unsafe { uu_login_ui_take_refresh() } != 0;
+        }
         false
     }
     pub fn status(&self, text: &str, tone: Tone) {
         #[cfg(uu_gtk)]
-        if self.shown { let t = cstr(text); unsafe { uu_login_ui_set_status(t.as_ptr(), tone as libc::c_int) } }
+        if self.shown {
+            let t = cstr(text);
+            unsafe { uu_login_ui_set_status(t.as_ptr(), tone as libc::c_int) }
+        }
     }
 
     #[allow(unused_variables)]
     pub fn done(&self, text: &str) {
         #[cfg(uu_gtk)]
-        if self.shown { let t = cstr(text); unsafe { uu_login_ui_set_done(t.as_ptr()) } }
+        if self.shown {
+            let t = cstr(text);
+            unsafe { uu_login_ui_set_done(t.as_ptr()) }
+        }
     }
 
     pub fn closed(&self) -> bool {
         #[cfg(uu_gtk)]
-        if self.shown { return unsafe { uu_login_ui_closed() } != 0; }
+        if self.shown {
+            return unsafe { uu_login_ui_closed() } != 0;
+        }
         false
     }
 
     /// Resolves when the user closes the window; never resolves without a window.
     pub async fn wait_closed(&self) {
-        if !self.shown { return std::future::pending().await; }
-        while !self.closed() { tokio::time::sleep(std::time::Duration::from_millis(200)).await; }
+        if !self.shown {
+            return std::future::pending().await;
+        }
+        while !self.closed() {
+            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        }
     }
 }
 
 impl Drop for LoginUi {
     fn drop(&mut self) {
         #[cfg(uu_gtk)]
-        if self.shown && !self.attached { unsafe { uu_login_ui_close() } }
+        if self.shown && !self.attached {
+            unsafe { uu_login_ui_close() }
+        }
     }
 }

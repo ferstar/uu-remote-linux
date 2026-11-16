@@ -12,9 +12,18 @@ pub enum Mode {
 pub const TYPE_OFF: u8 = 1;
 impl Mode {
     pub fn from_type(value: u64) -> Option<Self> {
-        match value { 2 => Some(Self::Picture), 3 => Some(Self::ScreenOff), _ => None }
+        match value {
+            2 => Some(Self::Picture),
+            3 => Some(Self::ScreenOff),
+            _ => None,
+        }
     }
-    pub fn wire_type(self) -> u8 { match self { Self::Picture => 2, Self::ScreenOff => 3 } }
+    pub fn wire_type(self) -> u8 {
+        match self {
+            Self::Picture => 2,
+            Self::ScreenOff => 3,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -22,7 +31,9 @@ mod tests {
     use super::*;
     #[test]
     fn wire_types_round_trip() {
-        for mode in [Mode::Picture, Mode::ScreenOff] { assert_eq!(Mode::from_type(mode.wire_type().into()), Some(mode)); }
+        for mode in [Mode::Picture, Mode::ScreenOff] {
+            assert_eq!(Mode::from_type(mode.wire_type().into()), Some(mode));
+        }
         assert_eq!(Mode::from_type(1), None);
         assert_eq!(Mode::from_type(0), None);
     }

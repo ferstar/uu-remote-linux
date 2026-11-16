@@ -18,8 +18,14 @@ fn main() {
 
     println!("Test Configuration:");
     println!("  Resolution : {}x{}", width, height);
-    println!("  Frame Size : {:.2} MB (ARGB32)", frame_bytes as f64 / 1024.0 / 1024.0);
-    println!("  Iterations : {} frames (Equivalent to 5.0s @ 60 FPS)", frames);
+    println!(
+        "  Frame Size : {:.2} MB (ARGB32)",
+        frame_bytes as f64 / 1024.0 / 1024.0
+    );
+    println!(
+        "  Iterations : {} frames (Equivalent to 5.0s @ 60 FPS)",
+        frames
+    );
     println!();
 
     // Simulating XShm framebuffer
@@ -40,7 +46,10 @@ fn main() {
     println!("    -> Total CPU copy time  : {:.2?}", duration_memcpy);
     println!("    -> Per-frame copy time  : {:.3} ms", memcpy_per_frame);
     println!("    -> Memory Bus Bandwidth : {:.2} GB/s", memcpy_gbps);
-    println!("    -> CPU Core Saturation  : {:.1}% of 1 core consumed solely by memcpy at 60 FPS", cpu_load_60fps);
+    println!(
+        "    -> CPU Core Saturation  : {:.1}% of 1 core consumed solely by memcpy at 60 FPS",
+        cpu_load_60fps
+    );
     println!();
 
     // Benchmark 2: in-process NVENC reading a registered host buffer (device copy when registration fails)
@@ -98,18 +107,42 @@ fn main() {
             if engine.is_null() {
                 println!("    [SKIP] NVENC driver not available on this system.");
             } else {
-                let registered = nvenc_register_host_buffer(engine, host_pixels.as_mut_ptr() as *mut _, frame_bytes) == 0;
-                println!("    -> Input path           : {}", if registered { "registered host buffer (DMA)" } else { "cuMemcpyHtoD copy" });
-                let input = if registered { std::ptr::null() } else { host_pixels.as_ptr() };
+                let registered = nvenc_register_host_buffer(
+                    engine,
+                    host_pixels.as_mut_ptr() as *mut _,
+                    frame_bytes,
+                ) == 0;
+                println!(
+                    "    -> Input path           : {}",
+                    if registered {
+                        "registered host buffer (DMA)"
+                    } else {
+                        "cuMemcpyHtoD copy"
+                    }
+                );
+                let input = if registered {
+                    std::ptr::null()
+                } else {
+                    host_pixels.as_ptr()
+                };
                 let mut out_data: *const u8 = std::ptr::null();
                 let mut out_len: u32 = 0;
                 // Warmup
-                let _ = nvenc_encode_frame(engine, input, width * 4, 1, &mut out_data, &mut out_len);
+                let _ =
+                    nvenc_encode_frame(engine, input, width * 4, 1, &mut out_data, &mut out_len);
 
                 let start = Instant::now();
                 let (mut encoded_bytes, mut encoded_frames) = (0u64, 0usize);
                 for i in 0..frames {
-                    if nvenc_encode_frame(engine, input, width * 4, i32::from(i == 0), &mut out_data, &mut out_len) == 0 {
+                    if nvenc_encode_frame(
+                        engine,
+                        input,
+                        width * 4,
+                        i32::from(i == 0),
+                        &mut out_data,
+                        &mut out_len,
+                    ) == 0
+                    {
                         encoded_bytes += u64::from(out_len);
                         encoded_frames += 1;
                     }
@@ -119,11 +152,22 @@ fn main() {
                     println!("    [FAIL] no frame was encoded");
                 } else {
                     let per_frame = elapsed.as_secs_f64() * 1000.0 / encoded_frames as f64;
-                    println!("    -> Encoded frames       : {encoded_frames}/{frames} in {elapsed:.2?}");
-                    println!("    -> Per-frame latency    : {per_frame:.3} ms ({:.1} FPS max)", 1000.0 / per_frame);
-                    println!("    -> Output bitrate       : {:.2} Mbps average", encoded_bytes as f64 * 8.0 / elapsed.as_secs_f64() / 1e6);
+                    println!(
+                        "    -> Encoded frames       : {encoded_frames}/{frames} in {elapsed:.2?}"
+                    );
+                    println!(
+                        "    -> Per-frame latency    : {per_frame:.3} ms ({:.1} FPS max)",
+                        1000.0 / per_frame
+                    );
+                    println!(
+                        "    -> Output bitrate       : {:.2} Mbps average",
+                        encoded_bytes as f64 * 8.0 / elapsed.as_secs_f64() / 1e6
+                    );
                     if registered {
-                        println!("    -> Host-to-device copy  : none ({:.0} MB/s at 60 fps avoided)", frame_bytes as f64 * 60.0 / 1024.0 / 1024.0);
+                        println!(
+                            "    -> Host-to-device copy  : none ({:.0} MB/s at 60 fps avoided)",
+                            frame_bytes as f64 * 60.0 / 1024.0 / 1024.0
+                        );
                     }
                 }
                 nvenc_destroy(engine);

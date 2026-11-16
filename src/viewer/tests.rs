@@ -1,63 +1,167 @@
-use super::{api::JoinData,session::{Session,Options},signal::Signal,rtc::{self,Peer,ReadyPolicy},wire::{self,Shape}};
-use serde_json::{json,Value};
-use std::{sync::{Arc,atomic::{AtomicUsize,Ordering}},time::Duration};
-use tokio::{net::TcpListener,sync::{Mutex,mpsc}};
-use futures_util::{SinkExt,StreamExt};
-use tokio_tungstenite::{accept_async,tungstenite::Message};
-use webrtc::{api::{APIBuilder,media_engine::MediaEngine,setting_engine::SettingEngine},peer_connection::{configuration::RTCConfiguration,sdp::session_description::RTCSessionDescription},util::vnet::{net::{Net,NetConfig},router::{Router,RouterConfig}}};
+use super::{
+    api::JoinData,
+    rtc::{self, Peer, ReadyPolicy},
+    session::{Options, Session},
+    signal::Signal,
+    wire::{self, Shape},
+};
+use futures_util::{SinkExt, StreamExt};
+use serde_json::{json, Value};
+use std::{
+    sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc,
+    },
+    time::Duration,
+};
+use tokio::{
+    net::TcpListener,
+    sync::{mpsc, Mutex},
+};
+use tokio_tungstenite::{accept_async, tungstenite::Message};
+use webrtc::{
+    api::{media_engine::MediaEngine, setting_engine::SettingEngine, APIBuilder},
+    peer_connection::{
+        configuration::RTCConfiguration, sdp::session_description::RTCSessionDescription,
+    },
+    util::vnet::{
+        net::{Net, NetConfig},
+        router::{Router, RouterConfig},
+    },
+};
 
-async fn virtual_network()->(SettingEngine,SettingEngine,Arc<Mutex<Router>>) {
+async fn virtual_network() -> (SettingEngine, SettingEngine, Arc<Mutex<Router>>) {
     // RFC 5737 documentation addresses live only inside webrtc's in-memory network.
-    let router=Arc::new(Mutex::new(Router::new(RouterConfig{cidr:"192.0.2.0/24".into(),..Default::default()}).unwrap()));
-    let mut settings=Vec::new();
-    for address in ["192.0.2.10","192.0.2.11"] {
-        let net=Arc::new(Net::new(Some(NetConfig{static_ips:vec![address.into()],..Default::default()})));
-        let nic=net.get_nic().unwrap();router.lock().await.add_net(nic.clone()).await.unwrap();
+    let router = Arc::new(Mutex::new(
+        Router::new(RouterConfig {
+            cidr: "192.0.2.0/24".into(),
+            ..Default::default()
+        })
+        .unwrap(),
+    ));
+    let mut settings = Vec::new();
+    for address in ["192.0.2.10", "192.0.2.11"] {
+        let net = Arc::new(Net::new(Some(NetConfig {
+            static_ips: vec![address.into()],
+            ..Default::default()
+        })));
+        let nic = net.get_nic().unwrap();
+        router.lock().await.add_net(nic.clone()).await.unwrap();
         nic.lock().await.set_router(router.clone()).await.unwrap();
-        let mut setting=SettingEngine::default();setting.set_vnet(Some(net));
+        let mut setting = SettingEngine::default();
+        setting.set_vnet(Some(net));
         setting.set_network_types(vec![webrtc::ice::network_type::NetworkType::Udp4]);
         settings.push(setting);
     }
     router.lock().await.start().await.unwrap();
-    let b=settings.pop().unwrap();(settings.pop().unwrap(),b,router)
+    let b = settings.pop().unwrap();
+    (settings.pop().unwrap(), b, router)
 }
-fn shape()->Shape {serde_json::from_str(include_str!("../../tests/fixtures/viewer/session-shape.json")).unwrap()}
+fn shape() -> Shape {
+    serde_json::from_str(include_str!(
+        "../../tests/fixtures/viewer/session-shape.json"
+    ))
+    .unwrap()
+}
 
 #[test]
 fn ice_configuration_preserves_credentials_without_public_fallback() {
-    let result=json!({"iceServers":[{"urls":"turn:relay.example.invalid:3478","username":"synthetic-user","credential":"synthetic-pass"}],"force_relay":true});
-    let config=rtc::configuration(&result).unwrap();assert_eq!(config.ice_servers.len(),1);
-    assert_eq!(config.ice_servers[0].credential,"synthetic-pass");
-    assert_eq!(config.ice_transport_policy,webrtc::peer_connection::policy::ice_transport_policy::RTCIceTransportPolicy::Relay);
-    assert!(rtc::configuration(&json!({"iceServers":[]})).unwrap().ice_servers.is_empty());
-    for result in [json!({}),json!({"iceServers":[],"force_relay":true}),json!({"iceServers":[{"urls":"https://invalid.example"}]}),json!({"iceServers":[{"urls":[7]}]})] {assert!(rtc::configuration(&result).is_err());}
+    let result = json!({"iceServers":[{"urls":"turn:relay.example.invalid:3478","username":"synthetic-user","credential":"synthetic-pass"}],"force_relay":true});
+    let config = rtc::configuration(&result).unwrap();
+    assert_eq!(config.ice_servers.len(), 1);
+    assert_eq!(config.ice_servers[0].credential, "synthetic-pass");
+    assert_eq!(
+        config.ice_transport_policy,
+        webrtc::peer_connection::policy::ice_transport_policy::RTCIceTransportPolicy::Relay
+    );
+    assert!(rtc::configuration(&json!({"iceServers":[]}))
+        .unwrap()
+        .ice_servers
+        .is_empty());
+    for result in [
+        json!({}),
+        json!({"iceServers":[],"force_relay":true}),
+        json!({"iceServers":[{"urls":"https://invalid.example"}]}),
+        json!({"iceServers":[{"urls":[7]}]}),
+    ] {
+        assert!(rtc::configuration(&result).is_err());
+    }
 }
 
 #[tokio::test]
 async fn websocket_control_ack_framing_heartbeat_failure_and_timeout() {
-    for legacy in [false,true] {
-        let listener=TcpListener::bind((std::net::Ipv4Addr::LOCALHOST,0)).await.unwrap();
-        let url=format!("ws://{}",listener.local_addr().unwrap());
-        let server=tokio::spawn(async move {
-            let(stream,_)=listener.accept().await.unwrap();let mut ws=accept_async(stream).await.unwrap();
-            ws.send(Message::Text("0{}".into())).await.unwrap();assert_eq!(ws.next().await.unwrap().unwrap(),Message::Text("40".into()));
+    for legacy in [false, true] {
+        let listener = TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
+            .await
+            .unwrap();
+        let url = format!("ws://{}", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut ws = accept_async(stream).await.unwrap();
+            ws.send(Message::Text("0{}".into())).await.unwrap();
+            assert_eq!(
+                ws.next().await.unwrap().unwrap(),
+                Message::Text("40".into())
+            );
             ws.send(Message::Text("40{}".into())).await.unwrap();
-            let Message::Text(t)=ws.next().await.unwrap().unwrap() else{panic!()};assert!(t.starts_with("451-11["));
-            let Message::Binary(b)=ws.next().await.unwrap().unwrap() else{panic!()};assert_eq!(b,if legacy{vec![4,8,1]}else{vec![8,1]});
-            ws.send(Message::Text("2fixture".into())).await.unwrap();assert_eq!(ws.next().await.unwrap().unwrap(),Message::Text("3fixture".into()));
-            ws.send(Message::Text("43999[\"success\",{}]".into())).await.unwrap();
-            ws.send(Message::Text("4311[\"fail\",{}]".into())).await.unwrap();
+            let Message::Text(t) = ws.next().await.unwrap().unwrap() else {
+                panic!()
+            };
+            assert!(t.starts_with("451-11["));
+            let Message::Binary(b) = ws.next().await.unwrap().unwrap() else {
+                panic!()
+            };
+            assert_eq!(b, if legacy { vec![4, 8, 1] } else { vec![8, 1] });
+            ws.send(Message::Text("2fixture".into())).await.unwrap();
+            assert_eq!(
+                ws.next().await.unwrap().unwrap(),
+                Message::Text("3fixture".into())
+            );
+            ws.send(Message::Text("43999[\"success\",{}]".into()))
+                .await
+                .unwrap();
+            ws.send(Message::Text("4311[\"fail\",{}]".into()))
+                .await
+                .unwrap();
         });
-        let mut signal=Signal::connect(&["invalid endpoint".into(),url],"synthetic-ticket",Duration::from_millis(100),legacy).await.unwrap();
-        assert!(signal.control(json!({}),vec![8,1],Duration::from_secs(2)).await.unwrap_err().contains("refused"));signal.close().await;server.await.unwrap();
+        let mut signal = Signal::connect(
+            &["invalid endpoint".into(), url],
+            "synthetic-ticket",
+            Duration::from_millis(100),
+            legacy,
+        )
+        .await
+        .unwrap();
+        assert!(signal
+            .control(json!({}), vec![8, 1], Duration::from_secs(2))
+            .await
+            .unwrap_err()
+            .contains("refused"));
+        signal.close().await;
+        server.await.unwrap();
     }
-    let listener=TcpListener::bind((std::net::Ipv4Addr::LOCALHOST,0)).await.unwrap();let url=format!("ws://{}",listener.local_addr().unwrap());
-    let job=tokio::spawn(async move {
-        let(s,_)=listener.accept().await.unwrap();let mut ws=accept_async(s).await.unwrap();ws.send(Message::Text("0{}".into())).await.unwrap();let _=ws.next().await;
-        ws.send(Message::Text("40{}".into())).await.unwrap();while ws.next().await.is_some(){}
+    let listener = TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
+        .await
+        .unwrap();
+    let url = format!("ws://{}", listener.local_addr().unwrap());
+    let job = tokio::spawn(async move {
+        let (s, _) = listener.accept().await.unwrap();
+        let mut ws = accept_async(s).await.unwrap();
+        ws.send(Message::Text("0{}".into())).await.unwrap();
+        let _ = ws.next().await;
+        ws.send(Message::Text("40{}".into())).await.unwrap();
+        while ws.next().await.is_some() {}
     });
-    let mut signal=Signal::connect(&[url],"synthetic-ticket",Duration::from_secs(2),false).await.unwrap();
-    assert!(signal.control(json!({}),vec![],Duration::from_millis(20)).await.unwrap_err().contains("timed out"));signal.close().await;job.await.unwrap();
+    let mut signal = Signal::connect(&[url], "synthetic-ticket", Duration::from_secs(2), false)
+        .await
+        .unwrap();
+    assert!(signal
+        .control(json!({}), vec![], Duration::from_millis(20))
+        .await
+        .unwrap_err()
+        .contains("timed out"));
+    signal.close().await;
+    job.await.unwrap();
 }
 
 #[tokio::test]
@@ -189,61 +293,197 @@ async fn complete_session_uses_loopback_signaling_and_virtual_rtc_through_echo()
 
 #[tokio::test]
 async fn early_candidates_and_foreign_session_messages_are_scoped() {
-    let(settings,_,router)=virtual_network().await;let(tx,_rx)=mpsc::channel(256);
-    let mut peer=Peer::new(RTCConfiguration::default(),&shape(),"synthetic-app","synthetic-ice","synthetic-host",tx,settings,super::clipboard::Bridge::new(false)).await.unwrap();
+    let (settings, _, router) = virtual_network().await;
+    let (tx, _rx) = mpsc::channel(256);
+    let mut peer = Peer::new(
+        RTCConfiguration::default(),
+        &shape(),
+        "synthetic-app",
+        "synthetic-ice",
+        "synthetic-host",
+        tx,
+        settings,
+        super::clipboard::Bridge::new(false),
+    )
+    .await
+    .unwrap();
     assert!(!peer.matches_route(&json!({"ice_id":"foreign"})));
     assert!(!peer.matches_route(&json!({"app_control_id":"foreign"})));
-    peer.receive(&json!({"type":"answer","ice_id":"foreign","sdp":"invalid"})).await.unwrap();
-    for _ in 0..256 {peer.receive(&json!({"type":"candidate","candidate":{"candidate":""}})).await.unwrap();}
-    assert!(peer.receive(&json!({"type":"candidate","candidate":{"candidate":""}})).await.is_err());
-    peer.close().await;router.lock().await.stop().await.unwrap();
+    peer.receive(&json!({"type":"answer","ice_id":"foreign","sdp":"invalid"}))
+        .await
+        .unwrap();
+    for _ in 0..256 {
+        peer.receive(&json!({"type":"candidate","candidate":{"candidate":""}}))
+            .await
+            .unwrap();
+    }
+    assert!(peer
+        .receive(&json!({"type":"candidate","candidate":{"candidate":""}}))
+        .await
+        .is_err());
+    peer.close().await;
+    router.lock().await.stop().await.unwrap();
 }
 
 #[tokio::test]
 async fn closing_one_peer_preserves_another_peer() {
-    let(a,b,router)=virtual_network().await;
-    let(tx1,_rx1)=mpsc::channel(256);let(tx2,_rx2)=mpsc::channel(256);
-    let first=Peer::new(RTCConfiguration::default(),&shape(),"synthetic-first","synthetic-first-ice","synthetic-host",tx1,a,super::clipboard::Bridge::new(false)).await.unwrap();
-    let second=Peer::new(RTCConfiguration::default(),&shape(),"synthetic-second","synthetic-second-ice","synthetic-host",tx2,b,super::clipboard::Bridge::new(false)).await.unwrap();
+    let (a, b, router) = virtual_network().await;
+    let (tx1, _rx1) = mpsc::channel(256);
+    let (tx2, _rx2) = mpsc::channel(256);
+    let first = Peer::new(
+        RTCConfiguration::default(),
+        &shape(),
+        "synthetic-first",
+        "synthetic-first-ice",
+        "synthetic-host",
+        tx1,
+        a,
+        super::clipboard::Bridge::new(false),
+    )
+    .await
+    .unwrap();
+    let second = Peer::new(
+        RTCConfiguration::default(),
+        &shape(),
+        "synthetic-second",
+        "synthetic-second-ice",
+        "synthetic-host",
+        tx2,
+        b,
+        super::clipboard::Bridge::new(false),
+    )
+    .await
+    .unwrap();
     first.close().await;
-    assert_ne!(second.pc.connection_state(),webrtc::peer_connection::peer_connection_state::RTCPeerConnectionState::Closed);
-    assert_eq!(second.channels.len(),5);
-    second.close().await;router.lock().await.stop().await.unwrap();
+    assert_ne!(
+        second.pc.connection_state(),
+        webrtc::peer_connection::peer_connection_state::RTCPeerConnectionState::Closed
+    );
+    assert_eq!(second.channels.len(), 5);
+    second.close().await;
+    router.lock().await.stop().await.unwrap();
 }
 
 #[tokio::test]
 async fn opus_and_video_tracks_are_received_independently_in_memory() {
-    tokio::time::timeout(Duration::from_secs(10),async {
-        let(viewer_settings,host_settings,router)=virtual_network().await;
-        let mut engine=MediaEngine::default();engine.register_default_codecs().unwrap();
-        let host=Arc::new(APIBuilder::new().with_media_engine(engine).with_setting_engine(host_settings).build().new_peer_connection(RTCConfiguration::default()).await.unwrap());
-        use webrtc::{track::track_local::{track_local_static_rtp::TrackLocalStaticRTP,TrackLocal,TrackLocalWriter},rtp_transceiver::rtp_codec::RTCRtpCodecCapability};
-        let audio=Arc::new(TrackLocalStaticRTP::new(RTCRtpCodecCapability{mime_type:"audio/opus".into(),clock_rate:48000,channels:2,..Default::default()},"audio".into(),"test".into()));
-        let video=Arc::new(TrackLocalStaticRTP::new(RTCRtpCodecCapability{mime_type:"video/H264".into(),clock_rate:90000,sdp_fmtp_line:"level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42e01f".into(),..Default::default()},"video".into(),"test".into()));
-        host.add_track(audio.clone() as Arc<dyn TrackLocal+Send+Sync>).await.unwrap();host.add_track(video.clone() as Arc<dyn TrackLocal+Send+Sync>).await.unwrap();
-        let(tx,_rx)=mpsc::channel(256);
-        let peer=Peer::new(RTCConfiguration::default(),&shape().video_preferences(false),"app","ice","host",tx,viewer_settings,super::clipboard::Bridge::new(false)).await.unwrap();
-        let mut gathered=peer.pc.gathering_complete_promise().await;peer.offer().await.unwrap();gathered.recv().await;
-        let offer=peer.pc.local_description().await.unwrap();assert!(offer.sdp.contains("m=audio") && offer.sdp.contains("opus/48000/2"));
-        host.set_remote_description(offer).await.unwrap();let answer=host.create_answer(None).await.unwrap();
-        let mut gathered=host.gathering_complete_promise().await;host.set_local_description(answer).await.unwrap();gathered.recv().await;
-        peer.pc.set_remote_description(host.local_description().await.unwrap()).await.unwrap();
-        while peer.pc.connection_state()!=webrtc::peer_connection::peer_connection_state::RTCPeerConnectionState::Connected {tokio::time::sleep(Duration::from_millis(10)).await;}
-        let mut heard=false;let mut seen=false;
-        for seq in 0..200 {
-            let packet=|payload:&[u8]|webrtc::rtp::packet::Packet{header:webrtc::rtp::header::Header{version:2,sequence_number:seq,timestamp:u32::from(seq)*960,marker:true,..Default::default()},payload:bytes::Bytes::copy_from_slice(payload)};
-            audio.write_rtp(&packet(&[0xf8,0xff,0xfe])).await.unwrap();video.write_rtp(&packet(&[0x65,1])).await.unwrap();
+    tokio::time::timeout(Duration::from_secs(10), async {
+        let (viewer_settings, host_settings, router) = virtual_network().await;
+        let mut engine = MediaEngine::default();
+        engine.register_default_codecs().unwrap();
+        let host = Arc::new(
+            APIBuilder::new()
+                .with_media_engine(engine)
+                .with_setting_engine(host_settings)
+                .build()
+                .new_peer_connection(RTCConfiguration::default())
+                .await
+                .unwrap(),
+        );
+        use webrtc::{
+            rtp_transceiver::rtp_codec::RTCRtpCodecCapability,
+            track::track_local::{
+                track_local_static_rtp::TrackLocalStaticRTP, TrackLocal, TrackLocalWriter,
+            },
+        };
+        let audio = Arc::new(TrackLocalStaticRTP::new(
+            RTCRtpCodecCapability {
+                mime_type: "audio/opus".into(),
+                clock_rate: 48000,
+                channels: 2,
+                ..Default::default()
+            },
+            "audio".into(),
+            "test".into(),
+        ));
+        let video = Arc::new(TrackLocalStaticRTP::new(
+            RTCRtpCodecCapability {
+                mime_type: "video/H264".into(),
+                clock_rate: 90000,
+                sdp_fmtp_line:
+                    "level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42e01f".into(),
+                ..Default::default()
+            },
+            "video".into(),
+            "test".into(),
+        ));
+        host.add_track(audio.clone() as Arc<dyn TrackLocal + Send + Sync>)
+            .await
+            .unwrap();
+        host.add_track(video.clone() as Arc<dyn TrackLocal + Send + Sync>)
+            .await
+            .unwrap();
+        let (tx, _rx) = mpsc::channel(256);
+        let peer = Peer::new(
+            RTCConfiguration::default(),
+            &shape().video_preferences(false),
+            "app",
+            "ice",
+            "host",
+            tx,
+            viewer_settings,
+            super::clipboard::Bridge::new(false),
+        )
+        .await
+        .unwrap();
+        let mut gathered = peer.pc.gathering_complete_promise().await;
+        peer.offer().await.unwrap();
+        gathered.recv().await;
+        let offer = peer.pc.local_description().await.unwrap();
+        assert!(offer.sdp.contains("m=audio") && offer.sdp.contains("opus/48000/2"));
+        host.set_remote_description(offer).await.unwrap();
+        let answer = host.create_answer(None).await.unwrap();
+        let mut gathered = host.gathering_complete_promise().await;
+        host.set_local_description(answer).await.unwrap();
+        gathered.recv().await;
+        peer.pc
+            .set_remote_description(host.local_description().await.unwrap())
+            .await
+            .unwrap();
+        while peer.pc.connection_state()
+            != webrtc::peer_connection::peer_connection_state::RTCPeerConnectionState::Connected
+        {
             tokio::time::sleep(Duration::from_millis(10)).await;
-            if let Some(data)=peer.audio.pop(){assert_eq!(data,vec![0xf8,0xff,0xfe]);heard=true;}
-            if let Some(data)=peer.desktop.units.pop(){assert_eq!(data.codec,super::media::Codec::H264);assert_eq!(data.data,vec![0,0,0,1,0x65,1]);seen=true;}
-            if heard && seen {break}
         }
-        assert!(heard && seen);peer.close().await;host.close().await.unwrap();router.lock().await.stop().await.unwrap();
-    }).await.expect("in-memory media timed out");
+        let mut heard = false;
+        let mut seen = false;
+        for seq in 0..200 {
+            let packet = |payload: &[u8]| webrtc::rtp::packet::Packet {
+                header: webrtc::rtp::header::Header {
+                    version: 2,
+                    sequence_number: seq,
+                    timestamp: u32::from(seq) * 960,
+                    marker: true,
+                    ..Default::default()
+                },
+                payload: bytes::Bytes::copy_from_slice(payload),
+            };
+            audio.write_rtp(&packet(&[0xf8, 0xff, 0xfe])).await.unwrap();
+            video.write_rtp(&packet(&[0x65, 1])).await.unwrap();
+            tokio::time::sleep(Duration::from_millis(10)).await;
+            if let Some(data) = peer.audio.pop() {
+                assert_eq!(data, vec![0xf8, 0xff, 0xfe]);
+                heard = true;
+            }
+            if let Some(data) = peer.desktop.units.pop() {
+                assert_eq!(data.codec, super::media::Codec::H264);
+                assert_eq!(data.data, vec![0, 0, 0, 1, 0x65, 1]);
+                seen = true;
+            }
+            if heard && seen {
+                break;
+            }
+        }
+        assert!(heard && seen);
+        peer.close().await;
+        host.close().await.unwrap();
+        router.lock().await.stop().await.unwrap();
+    })
+    .await
+    .expect("in-memory media timed out");
 }
 
 #[tokio::test]
-async fn desktop_file_window_reattaches_without_replacing_peer(){
+async fn desktop_file_window_reattaches_without_replacing_peer() {
     tokio::time::timeout(Duration::from_secs(10),async{
         use super::tools::{self,files::Files};
         let(viewer_settings,host_settings,router)=virtual_network().await;
@@ -309,53 +549,153 @@ async fn desktop_file_window_reattaches_without_replacing_peer(){
 }
 
 #[tokio::test]
-async fn hevc_track_uses_negotiated_payload_type_in_memory(){
-    tokio::time::timeout(Duration::from_secs(10),async {
+async fn hevc_track_uses_negotiated_payload_type_in_memory() {
+    tokio::time::timeout(Duration::from_secs(10), async {
         use super::media::Codec;
-        use webrtc::{track::track_local::{track_local_static_rtp::TrackLocalStaticRTP,TrackLocal,TrackLocalWriter},
-            rtp_transceiver::rtp_codec::{RTCRtpCodecCapability,RTCRtpCodecParameters,RTPCodecType}};
-        let(viewer_settings,host_settings,router)=virtual_network().await;
+        use webrtc::{
+            rtp_transceiver::rtp_codec::{
+                RTCRtpCodecCapability, RTCRtpCodecParameters, RTPCodecType,
+            },
+            track::track_local::{
+                track_local_static_rtp::TrackLocalStaticRTP, TrackLocal, TrackLocalWriter,
+            },
+        };
+        let (viewer_settings, host_settings, router) = virtual_network().await;
         // The host uses a different local PT; the answer binds its track to the viewer offer.
-        let mut engine=MediaEngine::default();
-        let capability=RTCRtpCodecCapability{mime_type:"video/H265".into(),clock_rate:90000,..Default::default()};
-        engine.register_codec(RTCRtpCodecParameters{capability:capability.clone(),payload_type:126,..Default::default()},RTPCodecType::Video).unwrap();
-        let host=Arc::new(APIBuilder::new().with_media_engine(engine).with_setting_engine(host_settings).build().new_peer_connection(RTCConfiguration::default()).await.unwrap());
-        let video=Arc::new(TrackLocalStaticRTP::new(capability,"video".into(),"test".into()));
-        host.add_track(video.clone() as Arc<dyn TrackLocal+Send+Sync>).await.unwrap();
-        host.on_data_channel(Box::new(|channel|Box::pin(async move {
-            if channel.label()=="CONTROL_DATA_CHANNEL" {
-                let weak=Arc::downgrade(&channel);
-                channel.on_open(Box::new(move||Box::pin(async move {
-                    if let Some(channel)=weak.upgrade(){
-                        let mut caps=Vec::new();for codec in [1,2]{let mut cap=Vec::new();wire::int(3,codec,&mut cap);wire::bytes(1,&cap,&mut caps);}
-                        channel.send(&bytes::Bytes::from(wire::envelope(2,18,&caps))).await.unwrap();
-                        // Model a host that declines 4:4:4 and encodes 4:2:0.
-                        channel.send(&bytes::Bytes::from(wire::envelope(3,25,&[24,1]))).await.unwrap();
-                    }
-                })));
-            }
-        })));
-        let(tx,_rx)=mpsc::channel(256);
-        let peer=Peer::new(RTCConfiguration::default(),&shape().video_preferences(false),"app","ice","host",tx,viewer_settings,super::clipboard::Bridge::new(false)).await.unwrap();
-        let mut gathered=peer.pc.gathering_complete_promise().await;peer.offer().await.unwrap();gathered.recv().await;
-        host.set_remote_description(peer.pc.local_description().await.unwrap()).await.unwrap();
-        let answer=host.create_answer(None).await.unwrap();
-        assert!(answer.sdp.contains("H265/90000"));assert!(!answer.sdp.contains("H264/90000"));
-        let mut gathered=host.gathering_complete_promise().await;host.set_local_description(answer).await.unwrap();gathered.recv().await;
-        peer.pc.set_remote_description(host.local_description().await.unwrap()).await.unwrap();
-        while peer.pc.connection_state()!=webrtc::peer_connection::peer_connection_state::RTCPeerConnectionState::Connected {tokio::time::sleep(Duration::from_millis(10)).await;}
-        let mut au=vec![0,0,0,1,64,1,9,0,0,0,1,38,1];au.extend(vec![7;200]);
-        let payloads=crate::hevc::payload(80,&au).unwrap();let mut seq=0;let mut seen=false;
+        let mut engine = MediaEngine::default();
+        let capability = RTCRtpCodecCapability {
+            mime_type: "video/H265".into(),
+            clock_rate: 90000,
+            ..Default::default()
+        };
+        engine
+            .register_codec(
+                RTCRtpCodecParameters {
+                    capability: capability.clone(),
+                    payload_type: 126,
+                    ..Default::default()
+                },
+                RTPCodecType::Video,
+            )
+            .unwrap();
+        let host = Arc::new(
+            APIBuilder::new()
+                .with_media_engine(engine)
+                .with_setting_engine(host_settings)
+                .build()
+                .new_peer_connection(RTCConfiguration::default())
+                .await
+                .unwrap(),
+        );
+        let video = Arc::new(TrackLocalStaticRTP::new(
+            capability,
+            "video".into(),
+            "test".into(),
+        ));
+        host.add_track(video.clone() as Arc<dyn TrackLocal + Send + Sync>)
+            .await
+            .unwrap();
+        host.on_data_channel(Box::new(|channel| {
+            Box::pin(async move {
+                if channel.label() == "CONTROL_DATA_CHANNEL" {
+                    let weak = Arc::downgrade(&channel);
+                    channel.on_open(Box::new(move || {
+                        Box::pin(async move {
+                            if let Some(channel) = weak.upgrade() {
+                                let mut caps = Vec::new();
+                                for codec in [1, 2] {
+                                    let mut cap = Vec::new();
+                                    wire::int(3, codec, &mut cap);
+                                    wire::bytes(1, &cap, &mut caps);
+                                }
+                                channel
+                                    .send(&bytes::Bytes::from(wire::envelope(2, 18, &caps)))
+                                    .await
+                                    .unwrap();
+                                // Model a host that declines 4:4:4 and encodes 4:2:0.
+                                channel
+                                    .send(&bytes::Bytes::from(wire::envelope(3, 25, &[24, 1])))
+                                    .await
+                                    .unwrap();
+                            }
+                        })
+                    }));
+                }
+            })
+        }));
+        let (tx, _rx) = mpsc::channel(256);
+        let peer = Peer::new(
+            RTCConfiguration::default(),
+            &shape().video_preferences(false),
+            "app",
+            "ice",
+            "host",
+            tx,
+            viewer_settings,
+            super::clipboard::Bridge::new(false),
+        )
+        .await
+        .unwrap();
+        let mut gathered = peer.pc.gathering_complete_promise().await;
+        peer.offer().await.unwrap();
+        gathered.recv().await;
+        host.set_remote_description(peer.pc.local_description().await.unwrap())
+            .await
+            .unwrap();
+        let answer = host.create_answer(None).await.unwrap();
+        assert!(answer.sdp.contains("H265/90000"));
+        assert!(!answer.sdp.contains("H264/90000"));
+        let mut gathered = host.gathering_complete_promise().await;
+        host.set_local_description(answer).await.unwrap();
+        gathered.recv().await;
+        peer.pc
+            .set_remote_description(host.local_description().await.unwrap())
+            .await
+            .unwrap();
+        while peer.pc.connection_state()
+            != webrtc::peer_connection::peer_connection_state::RTCPeerConnectionState::Connected
+        {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        let mut au = vec![0, 0, 0, 1, 64, 1, 9, 0, 0, 0, 1, 38, 1];
+        au.extend(vec![7; 200]);
+        let payloads = crate::hevc::payload(80, &au).unwrap();
+        let mut seq = 0;
+        let mut seen = false;
         for timestamp in 0..100 {
-            for (i,payload) in payloads.iter().enumerate(){
-                video.write_rtp(&webrtc::rtp::packet::Packet{header:webrtc::rtp::header::Header{version:2,sequence_number:seq,timestamp:timestamp*3000,marker:i+1==payloads.len(),..Default::default()},payload:payload.clone()}).await.unwrap();seq=seq.wrapping_add(1);
+            for (i, payload) in payloads.iter().enumerate() {
+                video
+                    .write_rtp(&webrtc::rtp::packet::Packet {
+                        header: webrtc::rtp::header::Header {
+                            version: 2,
+                            sequence_number: seq,
+                            timestamp: timestamp * 3000,
+                            marker: i + 1 == payloads.len(),
+                            ..Default::default()
+                        },
+                        payload: payload.clone(),
+                    })
+                    .await
+                    .unwrap();
+                seq = seq.wrapping_add(1);
             }
             tokio::time::sleep(Duration::from_millis(10)).await;
-            if let Some(unit)=peer.desktop.units.pop(){assert_eq!(unit.codec,Codec::H265);assert_eq!(unit.data,au);seen=true;}
-            if seen && peer.observed.chroma.load(Ordering::Acquire)==1 {break}
+            if let Some(unit) = peer.desktop.units.pop() {
+                assert_eq!(unit.codec, Codec::H265);
+                assert_eq!(unit.data, au);
+                seen = true;
+            }
+            if seen && peer.observed.chroma.load(Ordering::Acquire) == 1 {
+                break;
+            }
         }
-        assert!(seen);assert_eq!(peer.observed.encoder_codecs.load(Ordering::Acquire),3);
-        assert_eq!(peer.observed.chroma.load(Ordering::Acquire),1);
-        peer.close().await;host.close().await.unwrap();router.lock().await.stop().await.unwrap();
-    }).await.expect("in-memory H265 timed out");
+        assert!(seen);
+        assert_eq!(peer.observed.encoder_codecs.load(Ordering::Acquire), 3);
+        assert_eq!(peer.observed.chroma.load(Ordering::Acquire), 1);
+        peer.close().await;
+        host.close().await.unwrap();
+        router.lock().await.stop().await.unwrap();
+    })
+    .await
+    .expect("in-memory H265 timed out");
 }

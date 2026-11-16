@@ -2,38 +2,77 @@
 //! Thread-local faults are confined to each test's current-thread Tokio runtime.
 use super::*;
 use std::cell::RefCell;
-use webrtc::{api::{APIBuilder, media_engine::MediaEngine},
+use std::sync::atomic::{AtomicUsize, Ordering};
+use webrtc::{
+    api::{media_engine::MediaEngine, APIBuilder},
     peer_connection::configuration::RTCConfiguration,
-    rtp_transceiver::rtp_codec::RTPCodecType};
+    rtp_transceiver::rtp_codec::RTPCodecType,
+};
 
 pub(super) const DISPLAY: &str = "wayland:test-wake";
-struct Faults { wake_calls: AtomicUsize, fail_wake: usize, fail_capture: bool, stop: AtomicBool }
+struct Faults {
+    wake_calls: AtomicUsize,
+    fail_wake: usize,
+    fail_capture: bool,
+    stop: AtomicBool,
+}
 thread_local! { static FAULTS: RefCell<Option<Arc<Faults>>> = const { RefCell::new(None) }; }
 struct Reset;
-impl Drop for Reset { fn drop(&mut self) { FAULTS.with(|value| *value.borrow_mut() = None); } }
-pub(super) fn active() -> bool { FAULTS.with(|value| value.borrow().is_some()) }
-pub(super) fn wake() -> Option<Result<(), String>> {
-    FAULTS.with(|value| value.borrow().as_ref().map(|faults| {
-        let call = faults.wake_calls.fetch_add(1, Ordering::SeqCst) + 1;
-        if call == faults.fail_wake { Err("Wayland output power control unavailable".into()) } else { Ok(()) }
-    }))
+impl Drop for Reset {
+    fn drop(&mut self) {
+        FAULTS.with(|value| *value.borrow_mut() = None);
+    }
 }
-pub(super) async fn encode(latest: mpsc::Sender<Arc<CompleteFrame>>, settings: VideoSettings,
-    sequence: Arc<std::sync::atomic::AtomicU64>, budget: Arc<Semaphore>) -> Result<(), String> {
-    let faults = FAULTS.with(|value| value.borrow().clone()).expect("test faults installed");
+pub(super) fn active() -> bool {
+    FAULTS.with(|value| value.borrow().is_some())
+}
+pub(super) fn wake() -> Option<Result<(), String>> {
+    FAULTS.with(|value| {
+        value.borrow().as_ref().map(|faults| {
+            let call = faults.wake_calls.fetch_add(1, Ordering::SeqCst) + 1;
+            if call == faults.fail_wake {
+                Err("Wayland output power control unavailable".into())
+            } else {
+                Ok(())
+            }
+        })
+    })
+}
+pub(super) async fn encode(
+    latest: mpsc::Sender<Arc<CompleteFrame>>,
+    settings: VideoSettings,
+    sequence: Arc<std::sync::atomic::AtomicU64>,
+    budget: Arc<Semaphore>,
+) -> Result<(), String> {
+    let faults = FAULTS
+        .with(|value| value.borrow().clone())
+        .expect("test faults installed");
     loop {
         tokio::time::sleep(Duration::from_millis(10)).await;
-        if faults.stop.load(Ordering::SeqCst) { return Ok(()); }
+        if faults.stop.load(Ordering::SeqCst) {
+            return Ok(());
+        }
         if faults.fail_capture && sequence.load(Ordering::Relaxed) >= 4 {
             return Err("synthetic capture failed".into());
         }
-        let permit = budget.clone().acquire_owned().await.map_err(|_| "test budget closed")?;
+        let permit = budget
+            .clone()
+            .acquire_owned()
+            .await
+            .map_err(|_| "test budget closed")?;
         let frame = Arc::new(CompleteFrame {
-            source_generation: settings.source_generation, source_id: settings.source_id,
-            codec: settings.codec, sequence: sequence.fetch_add(1, Ordering::Relaxed) + 1,
-            completed_at: Instant::now(), data: vec![0, 0, 1, 65, 1, 2].into(), is_new: true, _permit: Some(permit),
+            source_generation: settings.source_generation,
+            source_id: settings.source_id,
+            codec: settings.codec,
+            sequence: sequence.fetch_add(1, Ordering::Relaxed) + 1,
+            completed_at: Instant::now(),
+            data: vec![0, 0, 1, 65, 1, 2].into(),
+            is_new: true,
+            _permit: Some(permit),
         });
-        if latest.send(frame).await.is_err() { return Ok(()); }
+        if latest.send(frame).await.is_err() {
+            return Ok(());
+        }
     }
 }
 
@@ -114,10 +153,16 @@ async fn exercise(fail_wake: usize, fail_capture: bool) {
 }
 
 #[tokio::test]
-async fn startup_wake_failure_does_not_stop_video() { exercise(1, false).await; }
+async fn startup_wake_failure_does_not_stop_video() {
+    exercise(1, false).await;
+}
 
 #[tokio::test]
-async fn periodic_wake_failure_does_not_stop_video() { exercise(2, false).await; }
+async fn periodic_wake_failure_does_not_stop_video() {
+    exercise(2, false).await;
+}
 
 #[tokio::test]
-async fn capture_failure_still_stops_video_after_wake_failure() { exercise(2, true).await; }
+async fn capture_failure_still_stops_video_after_wake_failure() {
+    exercise(2, true).await;
+}

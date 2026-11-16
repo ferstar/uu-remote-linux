@@ -17,7 +17,9 @@ fn integer(number: u32, value: i32, out: &mut Vec<u8>) {
     }
 }
 fn boolean(number: u32, value: bool, out: &mut Vec<u8>) {
-    if value { integer(number, 1, out); }
+    if value {
+        integer(number, 1, out);
+    }
 }
 fn bytes(number: u32, value: &[u8], out: &mut Vec<u8>) {
     varint((u64::from(number) << 3) | 2, out);
@@ -25,12 +27,20 @@ fn bytes(number: u32, value: &[u8], out: &mut Vec<u8>) {
     out.extend_from_slice(value);
 }
 fn text(number: u32, value: &str, out: &mut Vec<u8>) {
-    if !value.is_empty() { bytes(number, value.as_bytes(), out); }
+    if !value.is_empty() {
+        bytes(number, value.as_bytes(), out);
+    }
 }
 pub fn envelope(seq: u64, timestamp: u64, which: u32, payload: &[u8]) -> Vec<u8> {
     let mut out = Vec::new();
-    if seq != 0 { out.push(8); varint(seq, &mut out); }
-    if timestamp != 0 { out.push(16); varint(timestamp, &mut out); }
+    if seq != 0 {
+        out.push(8);
+        varint(seq, &mut out);
+    }
+    if timestamp != 0 {
+        out.push(16);
+        varint(timestamp, &mut out);
+    }
     bytes(which, payload, &mut out);
     out
 }
@@ -50,7 +60,14 @@ impl WinRect {
             return Err("Screen geometry must have positive logical and pixel dimensions".into());
         }
         let mut out = Vec::new();
-        for (field, value) in [(1,self.left),(2,self.top),(3,self.width),(4,self.height),(5,self.pixel_width),(6,self.pixel_height)] {
+        for (field, value) in [
+            (1, self.left),
+            (2, self.top),
+            (3, self.width),
+            (4, self.height),
+            (5, self.pixel_width),
+            (6, self.pixel_height),
+        ] {
             integer(field, value, &mut out);
         }
         Ok(out)
@@ -91,9 +108,23 @@ impl Screen<'_> {
         integer(1, self.id, &mut out);
         integer(2, self.fps, &mut out);
         bytes(3, &rect, &mut out); // the measured native resolution first
-        let sized = |(width, height): (i32, i32)| WinRect { width, height, pixel_width: width, pixel_height: height, ..self.resolution }.encode();
-        for size in self.scaled { bytes(3, &sized(*size)?, &mut out); }
-        let current = match self.current { Some(size) => sized(size)?, None => rect.clone() };
+        let sized = |(width, height): (i32, i32)| {
+            WinRect {
+                width,
+                height,
+                pixel_width: width,
+                pixel_height: height,
+                ..self.resolution
+            }
+            .encode()
+        };
+        for size in self.scaled {
+            bytes(3, &sized(*size)?, &mut out);
+        }
+        let current = match self.current {
+            Some(size) => sized(size)?,
+            None => rect.clone(),
+        };
         bytes(4, &current, &mut out); // current_resolution
         integer(5, self.screen_type, &mut out);
         bytes(6, &rect, &mut out); // init_resolution
@@ -110,7 +141,12 @@ impl Screen<'_> {
 }
 
 /// Message.which field 7 ScreenSources, including the selected screen id.
-pub fn encode_screen_sources(seq: u64, timestamp: u64, screens: &[Screen<'_>], current_id: i32) -> Result<Vec<u8>, String> {
+pub fn encode_screen_sources(
+    seq: u64,
+    timestamp: u64,
+    screens: &[Screen<'_>],
+    current_id: i32,
+) -> Result<Vec<u8>, String> {
     if screens.is_empty() || !screens.iter().any(|s| s.id == current_id) {
         return Err("Selected screen must exist in the measured inventory".into());
     }
@@ -118,7 +154,9 @@ pub fn encode_screen_sources(seq: u64, timestamp: u64, screens: &[Screen<'_>], c
     let mut tracks = std::collections::HashSet::new();
     let mut payload = Vec::new();
     for screen in screens {
-        if !ids.insert(screen.id) || (screen.video_track_index >= 0 && !tracks.insert(screen.video_track_index)) {
+        if !ids.insert(screen.id)
+            || (screen.video_track_index >= 0 && !tracks.insert(screen.video_track_index))
+        {
             return Err("Screen ids and video track indices must be unique".into());
         }
         bytes(1, &screen.encode()?, &mut payload);
@@ -130,7 +168,13 @@ pub fn encode_screen_sources(seq: u64, timestamp: u64, screens: &[Screen<'_>], c
 /// Message.which field 8 CaptureChange. Enum: desktop=0, window=1,
 /// MuMu=2, hook=3, none=99. Declares the selected target, not frame readiness:
 /// Android's unlock presenter requires desktop/window here even while locked.
-pub fn encode_capture_change(seq: u64, timestamp: u64, capture_type: i32, type_value: i32, description: &str) -> Result<Vec<u8>, String> {
+pub fn encode_capture_change(
+    seq: u64,
+    timestamp: u64,
+    capture_type: i32,
+    type_value: i32,
+    description: &str,
+) -> Result<Vec<u8>, String> {
     if !matches!(capture_type, 0 | 1 | 2 | 3 | 99) {
         return Err("Unknown CaptureChange type".into());
     }
@@ -147,14 +191,36 @@ pub fn encode_capture_change(seq: u64, timestamp: u64, capture_type: i32, type_v
 /// DPI, audio, input permission, or optional feature versions are advertised.
 /// Invalid dimensions/fps produce no messages, never invented fallback values.
 pub fn initial_messages(width: u32, height: u32, fps: u32) -> Vec<(u32, Vec<u8>)> {
-    let (Ok(width), Ok(height), Ok(fps)) = (i32::try_from(width), i32::try_from(height), i32::try_from(fps)) else { return Vec::new(); };
-    let screen = Screen {
-        id: 0, fps,
-        resolution: WinRect { left: 0, top: 0, width, height, pixel_width: width, pixel_height: height },
-        primary: true, dpr: 1.0, display_name: "", video_track_index: 0,
-        screen_type: 0, builtin_screen_type: 0, scaled: &[], current: None,
+    let (Ok(width), Ok(height), Ok(fps)) = (
+        i32::try_from(width),
+        i32::try_from(height),
+        i32::try_from(fps),
+    ) else {
+        return Vec::new();
     };
-    let Ok(encoded_screen) = screen.encode() else { return Vec::new(); };
+    let screen = Screen {
+        id: 0,
+        fps,
+        resolution: WinRect {
+            left: 0,
+            top: 0,
+            width,
+            height,
+            pixel_width: width,
+            pixel_height: height,
+        },
+        primary: true,
+        dpr: 1.0,
+        display_name: "",
+        video_track_index: 0,
+        screen_type: 0,
+        builtin_screen_type: 0,
+        scaled: &[],
+        current: None,
+    };
+    let Ok(encoded_screen) = screen.encode() else {
+        return Vec::new();
+    };
     let mut inventory = Vec::new();
     bytes(1, &encoded_screen, &mut inventory);
     // current_screen_id=0 is an ordinary scalar default. CaptureChange's
@@ -173,7 +239,13 @@ pub struct Permissions {
 /// Message.field15 SystemStateChange.field3 PermissionState.
 pub fn encode_permissions(seq: u64, timestamp: u64, permissions: Permissions) -> Vec<u8> {
     let mut state = Vec::new();
-    for (n, v) in [(1,permissions.assistant),(2,permissions.video_capture_allowed),(3,permissions.capture_content_visible),(4,permissions.audio_capture_allowed),(5,permissions.floating_ball)] {
+    for (n, v) in [
+        (1, permissions.assistant),
+        (2, permissions.video_capture_allowed),
+        (3, permissions.capture_content_visible),
+        (4, permissions.audio_capture_allowed),
+        (5, permissions.floating_ball),
+    ] {
         boolean(n, v, &mut state);
     }
     let mut change = Vec::new();
@@ -183,7 +255,13 @@ pub fn encode_permissions(seq: u64, timestamp: u64, permissions: Permissions) ->
 
 /// QuerySystemState StateId=1 expects this secure desktop state notification.
 /// Locked/SAS/support flags must come from the current Linux session's evidence.
-pub fn encode_secure_desktop(seq: u64, timestamp: u64, locked: bool, sas_shown: bool, supports_auto_logon: bool) -> Vec<u8> {
+pub fn encode_secure_desktop(
+    seq: u64,
+    timestamp: u64,
+    locked: bool,
+    sas_shown: bool,
+    supports_auto_logon: bool,
+) -> Vec<u8> {
     let mut state = Vec::new();
     boolean(1, locked, &mut state);
     boolean(2, sas_shown, &mut state);
@@ -208,22 +286,53 @@ mod wire_test_support;
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::wire_test_support::{decode_wire, WireValue};
+    use super::*;
     fn nested(data: &[u8], field: u32) -> Vec<u8> {
-        decode_wire(data).unwrap().into_iter().find_map(|f| {
-            if f.number == field { if let WireValue::Bytes(b) = f.value { return Some(b.to_vec()); } }
-            None
-        }).expect("expected nested field")
+        decode_wire(data)
+            .unwrap()
+            .into_iter()
+            .find_map(|f| {
+                if f.number == field {
+                    if let WireValue::Bytes(b) = f.value {
+                        return Some(b.to_vec());
+                    }
+                }
+                None
+            })
+            .expect("expected nested field")
     }
     fn number(data: &[u8], field: u32) -> Option<u64> {
         decode_wire(data).unwrap().into_iter().find_map(|f| {
-            if f.number == field { if let WireValue::Varint(v) = f.value { return Some(v); } }
+            if f.number == field {
+                if let WireValue::Varint(v) = f.value {
+                    return Some(v);
+                }
+            }
             None
         })
     }
     fn screen() -> Screen<'static> {
-        Screen { id: 1, fps: 10, resolution: WinRect { left: -1920, top: 0, width: 1920, height: 1080, pixel_width: 1920, pixel_height: 1080 }, primary: true, dpr: 1.0, display_name: "test display", video_track_index: 0, screen_type: 0, builtin_screen_type: 0, scaled: &[], current: None }
+        Screen {
+            id: 1,
+            fps: 10,
+            resolution: WinRect {
+                left: -1920,
+                top: 0,
+                width: 1920,
+                height: 1080,
+                pixel_width: 1920,
+                pixel_height: 1080,
+            },
+            primary: true,
+            dpr: 1.0,
+            display_name: "test display",
+            video_track_index: 0,
+            screen_type: 0,
+            builtin_screen_type: 0,
+            scaled: &[],
+            current: None,
+        }
     }
     #[test]
     fn screen_inventory_uses_correct_nested_rect_and_fixed64_scale() {
@@ -238,7 +347,10 @@ mod tests {
         assert_eq!(number(&rect, 5), Some(1920));
         assert_eq!(number(&rect, 6), Some(1080));
         assert_eq!(number(&display, 12).unwrap_or(0), 0);
-        assert!(decode_wire(&display).unwrap().iter().any(|f| f.number == 8 && f.value == WireValue::Fixed64(1.0f64.to_le_bytes())));
+        assert!(decode_wire(&display)
+            .unwrap()
+            .iter()
+            .any(|f| f.number == 8 && f.value == WireValue::Fixed64(1.0f64.to_le_bytes())));
         assert_eq!(nested(&display, 3), rect);
         assert_eq!(nested(&display, 6), rect);
     }
@@ -262,15 +374,27 @@ mod tests {
     fn rejects_missing_or_invalid_measured_inventory() {
         assert!(encode_screen_sources(1, 1, &[], 1).is_err());
         assert!(encode_screen_sources(1, 1, &[screen()], 2).is_err());
-        let mut s = screen(); s.resolution.width = 0;
+        let mut s = screen();
+        s.resolution.width = 0;
         assert!(encode_screen_sources(1, 1, &[s], 1).is_err());
-        let mut s = screen(); s.dpr = f64::NAN;
+        let mut s = screen();
+        s.dpr = f64::NAN;
         assert!(encode_screen_sources(1, 1, &[s], 1).is_err());
         assert!(encode_screen_sources(1, 1, &[screen(), screen()], 1).is_err());
     }
     #[test]
     fn permission_state_does_not_claim_audio_or_extra_features() {
-        let m = encode_permissions(1, 2, Permissions { assistant: false, video_capture_allowed: true, capture_content_visible: true, audio_capture_allowed: false, floating_ball: false });
+        let m = encode_permissions(
+            1,
+            2,
+            Permissions {
+                assistant: false,
+                video_capture_allowed: true,
+                capture_content_visible: true,
+                audio_capture_allowed: false,
+                floating_ball: false,
+            },
+        );
         let p = nested(&nested(&m, 15), 3);
         assert_eq!(number(&p, 2), Some(1));
         assert_eq!(number(&p, 3), Some(1));
@@ -301,8 +425,29 @@ mod inactive_track_tests {
     use super::*;
     #[test]
     fn multiple_inactive_screens_share_minus_one_but_active_track_is_unique() {
-        let screen=|id,track| Screen {id,fps:60,resolution:WinRect {left:0,top:0,width:1920,height:1080,pixel_width:1920,pixel_height:1080},primary:id==0,dpr:1.0,display_name:"test",video_track_index:track,screen_type:0,builtin_screen_type:0,scaled:&[],current:None};
-        assert!(encode_screen_sources(1,2,&[screen(0,0),screen(1,-1),screen(2,-1)],0).is_ok());
-        assert!(encode_screen_sources(1,2,&[screen(0,0),screen(1,0)],0).is_err());
+        let screen = |id, track| Screen {
+            id,
+            fps: 60,
+            resolution: WinRect {
+                left: 0,
+                top: 0,
+                width: 1920,
+                height: 1080,
+                pixel_width: 1920,
+                pixel_height: 1080,
+            },
+            primary: id == 0,
+            dpr: 1.0,
+            display_name: "test",
+            video_track_index: track,
+            screen_type: 0,
+            builtin_screen_type: 0,
+            scaled: &[],
+            current: None,
+        };
+        assert!(
+            encode_screen_sources(1, 2, &[screen(0, 0), screen(1, -1), screen(2, -1)], 0).is_ok()
+        );
+        assert!(encode_screen_sources(1, 2, &[screen(0, 0), screen(1, 0)], 0).is_err());
     }
 }

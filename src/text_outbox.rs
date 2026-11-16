@@ -1,5 +1,8 @@
 //! Per-peer TEXT backlog: one current metrics snapshot and bounded ordered replies.
-use std::sync::{Arc, atomic::{AtomicBool, Ordering}};
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc,
+};
 use tokio::sync::{mpsc, watch};
 
 const REPLY_CAPACITY: usize = 64;
@@ -19,15 +22,27 @@ pub(super) struct Receiver {
 pub(super) fn channel() -> (Sender, Receiver) {
     let (replies, rx) = mpsc::channel(REPLY_CAPACITY);
     let (metrics, latest) = watch::channel(None);
-    (Sender { replies, metrics, overflow_reported: Arc::new(AtomicBool::new(false)) },
-        Receiver { replies: rx, metrics: latest, metrics_open: true, replies_open: true })
+    (
+        Sender {
+            replies,
+            metrics,
+            overflow_reported: Arc::new(AtomicBool::new(false)),
+        },
+        Receiver {
+            replies: rx,
+            metrics: latest,
+            metrics_open: true,
+            replies_open: true,
+        },
+    )
 }
 impl Sender {
     pub(super) fn send(&self, message: Vec<u8>) -> Result<(), mpsc::error::SendError<Vec<u8>>> {
         self.replies.try_send(message).map_err(|error| {
             // Never wait for TEXT inside CONTROL's request handler: some viewers never open it.
             if matches!(error, mpsc::error::TrySendError::Full(_))
-                && !self.overflow_reported.swap(true, Ordering::Relaxed) {
+                && !self.overflow_reported.swap(true, Ordering::Relaxed)
+            {
                 log::warn!("TEXT reply queue full; dropping excess replies");
             }
             mpsc::error::SendError(error.into_inner())
@@ -40,7 +55,9 @@ impl Sender {
 impl Receiver {
     pub(super) async fn recv(&mut self) -> Option<Vec<u8>> {
         loop {
-            if !self.metrics_open && !self.replies_open { return None; }
+            if !self.metrics_open && !self.replies_open {
+                return None;
+            }
             tokio::select! {
                 changed = self.metrics.changed(), if self.metrics_open => {
                     if changed.is_err() { self.metrics_open = false; continue; }
@@ -62,18 +79,30 @@ mod tests {
     #[tokio::test]
     async fn unopened_text_keeps_latest_metrics_and_bounded_fifo_replies() {
         let (tx, mut rx) = channel();
-        for i in 0..10_000u32 { tx.metrics(i.to_le_bytes().to_vec()); }
-        for i in 0..REPLY_CAPACITY { tx.send(vec![i as u8]).unwrap(); }
+        for i in 0..10_000u32 {
+            tx.metrics(i.to_le_bytes().to_vec());
+        }
+        for i in 0..REPLY_CAPACITY {
+            tx.send(vec![i as u8]).unwrap();
+        }
         assert_eq!(tx.send(vec![255]).unwrap_err().0, vec![255]);
         let mut replies = Vec::new();
         let mut metrics = Vec::new();
         for _ in 0..REPLY_CAPACITY + 1 {
             let message = rx.recv().await.unwrap();
-            if message.len() == 4 { metrics.push(message); } else { replies.push(message[0]); }
+            if message.len() == 4 {
+                metrics.push(message);
+            } else {
+                replies.push(message[0]);
+            }
         }
         assert_eq!(metrics, vec![9_999u32.to_le_bytes().to_vec()]);
         assert_eq!(replies, (0..REPLY_CAPACITY as u8).collect::<Vec<_>>());
-        assert!(tokio::time::timeout(std::time::Duration::from_millis(20), rx.recv()).await.is_err());
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(20), rx.recv())
+                .await
+                .is_err()
+        );
         tx.send(vec![100]).unwrap();
         assert_eq!(rx.recv().await, Some(vec![100]));
         drop(tx);

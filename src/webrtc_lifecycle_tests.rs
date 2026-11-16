@@ -7,6 +7,7 @@ use super::*;
 use crate::protocol::{decode_wire, WireValue};
 use std::{collections::HashMap, time::Duration};
 use tokio::sync::mpsc;
+use webrtc::peer_connection::configuration::RTCConfiguration;
 
 type Messages = mpsc::UnboundedReceiver<(String, Vec<u8>)>;
 struct Viewer {
@@ -16,19 +17,41 @@ struct Viewer {
     router: Arc<Mutex<webrtc::util::vnet::router::Router>>,
 }
 
-async fn connect(desktop: bool, portal: Option<Arc<crate::desktop_session::PortalDesktop>>)
-    -> (WebRtcSession, Viewer) {
+async fn connect(
+    desktop: bool,
+    portal: Option<Arc<crate::desktop_session::PortalDesktop>>,
+) -> (WebRtcSession, Viewer) {
     connect_channels(desktop, portal, &["CONTROL_DATA_CHANNEL"]).await
 }
 
-async fn connect_channels(desktop: bool, portal: Option<Arc<crate::desktop_session::PortalDesktop>>, labels: &[&str])
-    -> (WebRtcSession, Viewer) {
+async fn connect_channels(
+    desktop: bool,
+    portal: Option<Arc<crate::desktop_session::PortalDesktop>>,
+    labels: &[&str],
+) -> (WebRtcSession, Viewer) {
     let input = Arc::new(InputInjector::without_desktop());
     let (host_setting, viewer_setting, router) = crate::test_network::virtual_network().await;
-    let screen = Arc::new(ScreenCapture::unavailable("synthetic pending desktop".into()));
-    let host = WebRtcSession::new(screen, input, crate::signaling::SignalingClient::disconnected(),
-        desktop, crate::session_ice::SessionIce::virtual_net(host_setting), portal).await.unwrap();
-    let pc = Arc::new(APIBuilder::new().with_setting_engine(viewer_setting).build().new_peer_connection(RTCConfiguration::default()).await.unwrap());
+    let screen = Arc::new(ScreenCapture::unavailable(
+        "synthetic pending desktop".into(),
+    ));
+    let host = WebRtcSession::new(
+        screen,
+        input,
+        crate::signaling::SignalingClient::disconnected(),
+        desktop,
+        crate::session_ice::SessionIce::virtual_net(host_setting),
+        portal,
+    )
+    .await
+    .unwrap();
+    let pc = Arc::new(
+        APIBuilder::new()
+            .with_setting_engine(viewer_setting)
+            .build()
+            .new_peer_connection(RTCConfiguration::default())
+            .await
+            .unwrap(),
+    );
     let (tx, messages) = mpsc::unbounded_channel();
     let mut channels = HashMap::new();
     for &label in labels {
@@ -41,33 +64,67 @@ async fn connect_channels(desktop: bool, portal: Option<Arc<crate::desktop_sessi
         channels.insert(label.to_string(), channel);
     }
     let mut gathered = pc.gathering_complete_promise().await;
-    pc.set_local_description(pc.create_offer(None).await.unwrap()).await.unwrap();
+    pc.set_local_description(pc.create_offer(None).await.unwrap())
+        .await
+        .unwrap();
     gathered.recv().await;
-    host.pc.set_remote_description(pc.local_description().await.unwrap()).await.unwrap();
+    host.pc
+        .set_remote_description(pc.local_description().await.unwrap())
+        .await
+        .unwrap();
     let mut gathered = host.pc.gathering_complete_promise().await;
-    host.pc.set_local_description(host.pc.create_answer(None).await.unwrap()).await.unwrap();
+    host.pc
+        .set_local_description(host.pc.create_answer(None).await.unwrap())
+        .await
+        .unwrap();
     gathered.recv().await;
-    pc.set_remote_description(host.pc.local_description().await.unwrap()).await.unwrap();
+    pc.set_remote_description(host.pc.local_description().await.unwrap())
+        .await
+        .unwrap();
     tokio::time::timeout(Duration::from_secs(8), async {
-        while channels.values().any(|channel| channel.ready_state() != webrtc::data_channel::data_channel_state::RTCDataChannelState::Open) {
+        while channels.values().any(|channel| {
+            channel.ready_state()
+                != webrtc::data_channel::data_channel_state::RTCDataChannelState::Open
+        }) {
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
-    }).await.expect("local SCTP channels did not open");
-    (host, Viewer { pc, channels, messages, router })
+    })
+    .await
+    .expect("local SCTP channels did not open");
+    (
+        host,
+        Viewer {
+            pc,
+            channels,
+            messages,
+            router,
+        },
+    )
 }
 
 fn body(message: &[u8], number: u32) -> Option<&[u8]> {
-    decode_wire(message).ok()?.into_iter().find_map(|field| match (field.number, field.value) {
-        (n, WireValue::Bytes(bytes)) if n == number => Some(bytes), _ => None,
-    })
+    decode_wire(message)
+        .ok()?
+        .into_iter()
+        .find_map(|field| match (field.number, field.value) {
+            (n, WireValue::Bytes(bytes)) if n == number => Some(bytes),
+            _ => None,
+        })
 }
 fn varint_of(message: &[u8], number: u32) -> Option<u64> {
-    decode_wire(message).ok()?.into_iter().find_map(|field| match (field.number, field.value) {
-        (n, WireValue::Varint(value)) if n == number => Some(value), _ => None,
-    })
+    decode_wire(message)
+        .ok()?
+        .into_iter()
+        .find_map(|field| match (field.number, field.value) {
+            (n, WireValue::Varint(value)) if n == number => Some(value),
+            _ => None,
+        })
 }
 fn put_varint(mut value: usize, out: &mut Vec<u8>) {
-    while value >= 128 { out.push((value as u8 & 127) | 128); value >>= 7; }
+    while value >= 128 {
+        out.push((value as u8 & 127) | 128);
+        value >>= 7;
+    }
     out.push(value as u8);
 }
 fn field_bytes(number: u32, value: &[u8]) -> Vec<u8> {
@@ -97,20 +154,28 @@ async fn receive(messages: &mut Messages, field: u32, within: Duration) -> Optio
     tokio::time::timeout(within, async {
         loop {
             let (channel, message) = messages.recv().await?;
-            if channel == "CONTROL_DATA_CHANNEL" && body(&message, field).is_some() { return Some(message); }
+            if channel == "CONTROL_DATA_CHANNEL" && body(&message, field).is_some() {
+                return Some(message);
+            }
         }
-    }).await.unwrap_or(None)
+    })
+    .await
+    .unwrap_or(None)
 }
 /// The Echo response advertises ff_clipboard (FeatureFlag field 8) only when true.
 fn echo_advertises_clipboard(message: &[u8]) -> bool {
-    body(message, 3).and_then(|action| decode_wire(action).ok()).is_some_and(|action| {
-        action.iter().any(|field| match (field.number, &field.value) {
-            (4, WireValue::Bytes(flags)) => decode_wire(flags).ok().is_some_and(|flags| {
-                flags.iter().any(|flag| flag.number == 8)
-            }),
-            _ => false,
+    body(message, 3)
+        .and_then(|action| decode_wire(action).ok())
+        .is_some_and(|action| {
+            action
+                .iter()
+                .any(|field| match (field.number, &field.value) {
+                    (4, WireValue::Bytes(flags)) => decode_wire(flags)
+                        .ok()
+                        .is_some_and(|flags| flags.iter().any(|flag| flag.number == 8)),
+                    _ => false,
+                })
         })
-    })
 }
 fn ready_screen() -> Arc<ScreenCapture> {
     let mut screen = ScreenCapture::unavailable("synthetic ready desktop".into());
@@ -131,21 +196,36 @@ async fn ready_without_portal_session_does_not_advertise_clipboard() {
     tokio::time::timeout(Duration::from_secs(20), async {
         let (_, locked) = tokio::sync::watch::channel(Some(false));
         let portal = Arc::new(crate::desktop_session::PortalDesktop::with_lock_state(
-            Arc::new(ScreenCapture::unavailable("synthetic pending desktop".into())), locked));
+            Arc::new(ScreenCapture::unavailable(
+                "synthetic pending desktop".into(),
+            )),
+            locked,
+        ));
         let (host, mut viewer) = connect(true, Some(portal.clone())).await;
         // Establish the early Echo while the desktop is still pending: no clipboard claim.
-        viewer.channels["CONTROL_DATA_CHANNEL"].send(&echo_request(3).into()).await.unwrap();
-        let echo = receive(&mut viewer.messages, 3, Duration::from_secs(3)).await.expect("early Echo");
+        viewer.channels["CONTROL_DATA_CHANNEL"]
+            .send(&echo_request(3).into())
+            .await
+            .unwrap();
+        let echo = receive(&mut viewer.messages, 3, Duration::from_secs(3))
+            .await
+            .expect("early Echo");
         assert!(!echo_advertises_clipboard(&echo));
         // Readiness with no Portal session keeps the capability false and must not
         // manufacture an unsolicited Echo response from a timer tick.
         portal.publish_test_screen(ready_screen());
-        assert!(receive(&mut viewer.messages, 3, Duration::from_millis(800)).await.is_none(),
-            "Echo was re-sent without an established clipboard capability");
+        assert!(
+            receive(&mut viewer.messages, 3, Duration::from_millis(800))
+                .await
+                .is_none(),
+            "Echo was re-sent without an established clipboard capability"
+        );
         viewer.pc.close().await.unwrap();
         host.pc.close().await.unwrap();
         viewer.router.lock().await.stop().await.unwrap();
-    }).await.expect("clipboard capability regression exceeded deadline");
+    })
+    .await
+    .expect("clipboard capability regression exceeded deadline");
 }
 
 #[tokio::test]
@@ -153,29 +233,51 @@ async fn pending_portal_answers_echo_immediately_and_defers_capture_settings() {
     tokio::time::timeout(Duration::from_secs(30), async {
         let (_, locked) = tokio::sync::watch::channel(Some(false));
         let portal = Arc::new(crate::desktop_session::PortalDesktop::with_lock_state(
-            Arc::new(ScreenCapture::unavailable("synthetic pending desktop".into())), locked));
+            Arc::new(ScreenCapture::unavailable(
+                "synthetic pending desktop".into(),
+            )),
+            locked,
+        ));
         let (host, mut viewer) = connect(true, Some(portal.clone())).await;
 
         // Echo must be answered while the placeholder screen is still pending, and it
         // must not claim a clipboard bridge that is not established yet.
-        viewer.channels["CONTROL_DATA_CHANNEL"].send(&echo_request(7).into()).await.unwrap();
-        let echo = receive(&mut viewer.messages, 3, Duration::from_secs(3)).await.expect("early Echo was not answered while Portal was pending");
+        viewer.channels["CONTROL_DATA_CHANNEL"]
+            .send(&echo_request(7).into())
+            .await
+            .unwrap();
+        let echo = receive(&mut viewer.messages, 3, Duration::from_secs(3))
+            .await
+            .expect("early Echo was not answered while Portal was pending");
         assert!(!echo_advertises_clipboard(&echo));
-        let args = body(&echo, 3).and_then(|action| decode_wire(action).ok())
-            .and_then(|action| action.into_iter().find_map(|field| match (field.number, field.value) {
-                (2, WireValue::Bytes(bytes)) => Some(bytes), _ => None,
-            }));
+        let args = body(&echo, 3)
+            .and_then(|action| decode_wire(action).ok())
+            .and_then(|action| {
+                action
+                    .into_iter()
+                    .find_map(|field| match (field.number, field.value) {
+                        (2, WireValue::Bytes(bytes)) => Some(bytes),
+                        _ => None,
+                    })
+            });
         assert_eq!(args, Some(br#"{"seq":7}"#.as_slice()));
 
         // A capture setting arriving during the same pending window is queued, not dropped.
         let mut setting = Vec::new();
-        field_varint(2, 2, &mut setting);  // quality = General (高清 2M)
+        field_varint(2, 2, &mut setting); // quality = General (高清 2M)
         field_varint(18, 30, &mut setting); // fpsCount = 30
         field_varint(5, 1920, &mut setting);
         field_varint(6, 1080, &mut setting);
-        viewer.channels["CONTROL_DATA_CHANNEL"].send(&capture_rpc(77, 2, &setting).into()).await.unwrap();
-        assert!(receive(&mut viewer.messages, 22, Duration::from_millis(700)).await.is_none(),
-            "capture setting answered before the desktop was ready");
+        viewer.channels["CONTROL_DATA_CHANNEL"]
+            .send(&capture_rpc(77, 2, &setting).into())
+            .await
+            .unwrap();
+        assert!(
+            receive(&mut viewer.messages, 22, Duration::from_millis(700))
+                .await
+                .is_none(),
+            "capture setting answered before the desktop was ready"
+        );
 
         // Readiness publishes the real geometry; the queued request is applied and answered.
         let mut screen = ready_screen();
@@ -183,34 +285,71 @@ async fn pending_portal_answers_echo_immediately_and_defers_capture_settings() {
         native.width = 3840;
         native.height = 2160;
         portal.publish_test_screen(screen);
-        let response = receive(&mut viewer.messages, 22, Duration::from_secs(5)).await.expect("deferred capture setting was never answered");
-        let header = body(&response, 22).and_then(|r| body(r, 1)).expect("RpcResponse header");
-        assert_eq!(varint_of(header, 1), Some(77), "deferred reply lost the request id");
-        let inventory = receive(&mut viewer.messages, 7, Duration::from_secs(5)).await.expect("updated ScreenSources");
-        let display = body(&inventory, 7).and_then(|sources| body(sources, 1)).expect("display");
+        let response = receive(&mut viewer.messages, 22, Duration::from_secs(5))
+            .await
+            .expect("deferred capture setting was never answered");
+        let header = body(&response, 22)
+            .and_then(|r| body(r, 1))
+            .expect("RpcResponse header");
+        assert_eq!(
+            varint_of(header, 1),
+            Some(77),
+            "deferred reply lost the request id"
+        );
+        let inventory = receive(&mut viewer.messages, 7, Duration::from_secs(5))
+            .await
+            .expect("updated ScreenSources");
+        let display = body(&inventory, 7)
+            .and_then(|sources| body(sources, 1))
+            .expect("display");
         // v4 advertises pixels even when the recovered desktop's native size differs.
         for (field, size) in [(4, (1920, 1080)), (6, (3840, 2160))] {
             let rect = body(display, field).expect("display rectangle");
-            assert_eq!((varint_of(rect, 3), varint_of(rect, 4)), (Some(size.0), Some(size.1)));
-            assert_eq!((varint_of(rect, 5), varint_of(rect, 6)), (Some(size.0), Some(size.1)));
+            assert_eq!(
+                (varint_of(rect, 3), varint_of(rect, 4)),
+                (Some(size.0), Some(size.1))
+            );
+            assert_eq!(
+                (varint_of(rect, 5), varint_of(rect, 6)),
+                (Some(size.0), Some(size.1))
+            );
         }
-        assert!(decode_wire(display).unwrap().iter().any(|field|
-            field.number == 8 && field.value == WireValue::Fixed64(1.0f64.to_le_bytes())));
-        let sync = receive(&mut viewer.messages, 25, Duration::from_secs(5)).await.expect("CaptureSettingSync");
+        assert!(decode_wire(display)
+            .unwrap()
+            .iter()
+            .any(|field| field.number == 8
+                && field.value == WireValue::Fixed64(1.0f64.to_le_bytes())));
+        let sync = receive(&mut viewer.messages, 25, Duration::from_secs(5))
+            .await
+            .expect("CaptureSettingSync");
         let sync = body(&sync, 25).expect("CaptureSettingSync payload");
         assert_eq!(varint_of(sync, 1), Some(30));
-        assert_eq!((varint_of(sync, 5), varint_of(sync, 6)), (Some(1920), Some(1080)));
+        assert_eq!(
+            (varint_of(sync, 5), varint_of(sync, 6)),
+            (Some(1920), Some(1080))
+        );
 
         // CONTROL still serves Echo after readiness, and no timer-driven flood appears.
-        viewer.channels["CONTROL_DATA_CHANNEL"].send(&echo_request(9).into()).await.unwrap();
-        assert!(receive(&mut viewer.messages, 3, Duration::from_secs(3)).await.is_some());
-        assert!(receive(&mut viewer.messages, 3, Duration::from_millis(700)).await.is_none(),
-            "Echo was re-sent without a capability change");
+        viewer.channels["CONTROL_DATA_CHANNEL"]
+            .send(&echo_request(9).into())
+            .await
+            .unwrap();
+        assert!(receive(&mut viewer.messages, 3, Duration::from_secs(3))
+            .await
+            .is_some());
+        assert!(
+            receive(&mut viewer.messages, 3, Duration::from_millis(700))
+                .await
+                .is_none(),
+            "Echo was re-sent without a capability change"
+        );
 
         viewer.pc.close().await.unwrap();
         host.pc.close().await.unwrap();
         viewer.router.lock().await.stop().await.unwrap();
-    }).await.expect("pending-Portal lifecycle regression exceeded deadline");
+    })
+    .await
+    .expect("pending-Portal lifecycle regression exceeded deadline");
 }
 
 #[tokio::test]
@@ -220,17 +359,31 @@ async fn tool_peer_applies_capture_settings_without_a_desktop() {
         let mut setting = Vec::new();
         field_varint(1, 1280, &mut setting);
         field_varint(2, 720, &mut setting);
-        viewer.channels["CONTROL_DATA_CHANNEL"].send(&capture_rpc(5, 6, &setting).into()).await.unwrap();
-        let response = receive(&mut viewer.messages, 22, Duration::from_secs(3)).await.expect("tool capture setting was not answered");
-        let header = body(&response, 22).and_then(|r| body(r, 1)).expect("RpcResponse header");
+        viewer.channels["CONTROL_DATA_CHANNEL"]
+            .send(&capture_rpc(5, 6, &setting).into())
+            .await
+            .unwrap();
+        let response = receive(&mut viewer.messages, 22, Duration::from_secs(3))
+            .await
+            .expect("tool capture setting was not answered");
+        let header = body(&response, 22)
+            .and_then(|r| body(r, 1))
+            .expect("RpcResponse header");
         assert_eq!(varint_of(header, 1), Some(5));
-        let sync = receive(&mut viewer.messages, 25, Duration::from_secs(3)).await.expect("CaptureSettingSync");
+        let sync = receive(&mut viewer.messages, 25, Duration::from_secs(3))
+            .await
+            .expect("CaptureSettingSync");
         let sync = body(&sync, 25).expect("CaptureSettingSync payload");
-        assert_eq!((varint_of(sync, 5), varint_of(sync, 6)), (Some(1280), Some(720)));
+        assert_eq!(
+            (varint_of(sync, 5), varint_of(sync, 6)),
+            (Some(1280), Some(720))
+        );
         viewer.pc.close().await.unwrap();
         host.pc.close().await.unwrap();
         viewer.router.lock().await.stop().await.unwrap();
-    }).await.expect("tool capture-setting regression exceeded deadline");
+    })
+    .await
+    .expect("tool capture-setting regression exceeded deadline");
 }
 
 /// Exercise the locally patched notifications and close handler through real SCTP,
@@ -244,45 +397,99 @@ async fn terminal_notifications_and_disconnect_preserve_control_channel() {
         impl Drop for Cleanup {
             fn drop(&mut self) {
                 let (tx, _rx) = mpsc::unbounded_channel();
-                TerminalConn::new(tx).handle(&terminal::encode(terminal::KILL_REQ, 999,
-                    serde_json::json!({"session_id": self.0}).to_string().as_bytes()));
+                TerminalConn::new(tx).handle(&terminal::encode(
+                    terminal::KILL_REQ,
+                    999,
+                    serde_json::json!({"session_id": self.0})
+                        .to_string()
+                        .as_bytes(),
+                ));
             }
         }
         let _cleanup = Cleanup(id);
-        let (host, mut viewer) = connect_channels(false, None,
-            &["CONTROL_DATA_CHANNEL", "BINARY_DATA_CHANNEL"]).await;
-        viewer.channels["BINARY_DATA_CHANNEL"].send(&terminal::encode(terminal::OPEN, id,
-            br#"{"cols":80,"rows":24,"shell":"/bin/sh"}"#).into()).await.unwrap();
+        let (host, mut viewer) = connect_channels(
+            false,
+            None,
+            &["CONTROL_DATA_CHANNEL", "BINARY_DATA_CHANNEL"],
+        )
+        .await;
+        viewer.channels["BINARY_DATA_CHANNEL"]
+            .send(
+                &terminal::encode(
+                    terminal::OPEN,
+                    id,
+                    br#"{"cols":80,"rows":24,"shell":"/bin/sh"}"#,
+                )
+                .into(),
+            )
+            .await
+            .unwrap();
         tokio::time::timeout(Duration::from_secs(3), async {
             let (mut opened, mut notified) = (false, false);
             while !(opened && notified) {
-                let (label, bytes) = viewer.messages.recv().await.expect("terminal channel closed");
-                if label != "BINARY_DATA_CHANNEL" { continue; }
+                let (label, bytes) = viewer
+                    .messages
+                    .recv()
+                    .await
+                    .expect("terminal channel closed");
+                if label != "BINARY_DATA_CHANNEL" {
+                    continue;
+                }
                 if let Some(frame) = terminal::decode(&bytes) {
                     if frame.kind == terminal::OPEN_RESP && frame.session == id {
-                        assert_eq!(serde_json::from_slice::<serde_json::Value>(&frame.payload).unwrap()["code"], 0);
+                        assert_eq!(
+                            serde_json::from_slice::<serde_json::Value>(&frame.payload).unwrap()
+                                ["code"],
+                            0
+                        );
                         opened = true;
                     }
-                } else if body(&bytes, 28) == Some(&[][..]) { notified = true; }
+                } else if body(&bytes, 28) == Some(&[][..]) {
+                    notified = true;
+                }
             }
-        }).await.expect("open response and list notification must both reach the viewer");
+        })
+        .await
+        .expect("open response and list notification must both reach the viewer");
         let state = || {
             let (tx, mut rx) = mpsc::unbounded_channel();
             TerminalConn::new(tx).handle(&terminal::encode(terminal::LIST_REQ, 998, &[]));
             let frame = terminal::decode(&rx.try_recv().unwrap()).unwrap();
-            serde_json::from_slice::<Vec<serde_json::Value>>(&frame.payload).unwrap().into_iter()
-                .find(|s| s["session_id"] == id).unwrap()["state"].as_str().unwrap().to_owned()
+            serde_json::from_slice::<Vec<serde_json::Value>>(&frame.payload)
+                .unwrap()
+                .into_iter()
+                .find(|s| s["session_id"] == id)
+                .unwrap()["state"]
+                .as_str()
+                .unwrap()
+                .to_owned()
         };
         assert_eq!(state(), "running");
-        viewer.channels["BINARY_DATA_CHANNEL"].close().await.unwrap();
+        viewer.channels["BINARY_DATA_CHANNEL"]
+            .close()
+            .await
+            .unwrap();
         tokio::time::timeout(Duration::from_secs(3), async {
-            while state() != "detached" { tokio::time::sleep(Duration::from_millis(20)).await; }
-        }).await.expect("channel closure must detach its terminal session");
-        viewer.channels["CONTROL_DATA_CHANNEL"].send(&echo_request(123).into()).await.unwrap();
-        assert!(receive(&mut viewer.messages, 3, Duration::from_secs(3)).await.is_some(),
-            "terminal closure must leave CONTROL responsive");
+            while state() != "detached" {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("channel closure must detach its terminal session");
+        viewer.channels["CONTROL_DATA_CHANNEL"]
+            .send(&echo_request(123).into())
+            .await
+            .unwrap();
+        assert!(
+            receive(&mut viewer.messages, 3, Duration::from_secs(3))
+                .await
+                .is_some(),
+            "terminal closure must leave CONTROL responsive"
+        );
         viewer.pc.close().await.unwrap();
         host.pc.close().await.unwrap();
         viewer.router.lock().await.stop().await.unwrap();
-    }).await.expect("terminal lifecycle regression exceeded deadline");
+    })
+    .await
+    .expect("terminal lifecycle regression exceeded deadline");
 }

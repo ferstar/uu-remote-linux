@@ -59,8 +59,12 @@ pub fn parse_codec(value: Option<&str>) -> Option<Option<CodecPref>> {
 
 fn file_fields() -> (Option<String>, Option<String>) {
     let path = crate::system_actions::settings_path();
-    let Ok(bytes) = std::fs::read(path) else { return (None, None) };
-    let Ok(value) = serde_json::from_slice::<serde_json::Value>(&bytes) else { return (None, None) };
+    let Ok(bytes) = std::fs::read(path) else {
+        return (None, None);
+    };
+    let Ok(value) = serde_json::from_slice::<serde_json::Value>(&bytes) else {
+        return (None, None);
+    };
     let field = |name: &str| value.get(name).and_then(|v| v.as_str()).map(str::to_owned);
     (field("video_encoder"), field("video_codec"))
 }
@@ -68,19 +72,32 @@ fn file_fields() -> (Option<String>, Option<String>) {
 /// Unset/auto tries NVENC only with an NVIDIA driver loaded: `ffmpeg -encoders` lists h264_nvenc
 /// on any machine, so without this every stream start first ran a doomed NVENC process (#10).
 pub fn legacy_auto(nvidia: bool) -> Encoder {
-    if nvidia { Encoder::Nvenc } else { Encoder::Cpu }
+    if nvidia {
+        Encoder::Nvenc
+    } else {
+        Encoder::Cpu
+    }
 }
 
 /// Auto candidate order. NVIDIA present: NVENC then CPU. No NVIDIA: CPU only.
 /// VAAPI is not an auto candidate until #33 (FFmpeg-process VAAPI ignores maxrate).
 /// Explicit vaapi (setting or `UU_VIDEO_ENCODER`) is unchanged.
 pub fn auto_order(nvidia: bool) -> Vec<Encoder> {
-    if nvidia { vec![Encoder::Nvenc, Encoder::Cpu] } else { vec![Encoder::Cpu] }
+    if nvidia {
+        vec![Encoder::Nvenc, Encoder::Cpu]
+    } else {
+        vec![Encoder::Cpu]
+    }
 }
 
 /// Why one candidate's synthetic IDR did not count. Logged as the variant name only.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ProbeFail { Timeout, NoIdr, Spawn, Exit }
+pub enum ProbeFail {
+    Timeout,
+    NoIdr,
+    Spawn,
+    Exit,
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ProbeOutcome {
@@ -98,7 +115,9 @@ pub enum ProbeOutcome {
 impl ProbeOutcome {
     /// Counts as a successful probe for `choose_from_probe`.
     /// `NativeUnprobed` does not: that candidate was not shown to encode.
-    pub fn ok(self) -> bool { matches!(self, Self::Ok) }
+    pub fn ok(self) -> bool {
+        matches!(self, Self::Ok)
+    }
     pub fn label(self) -> &'static str {
         match self {
             Self::Ok => "ok",
@@ -118,18 +137,32 @@ impl ProbeOutcome {
 /// A process failure then becomes `NativeUnprobed` instead of disqualifying that candidate.
 /// Default builds pass `native_would_run = false`, so the process result is unchanged.
 pub fn outcome_for_candidate(process: ProbeOutcome, native_would_run: bool) -> ProbeOutcome {
-    if process.ok() || !native_would_run { process } else { ProbeOutcome::NativeUnprobed }
+    if process.ok() || !native_would_run {
+        process
+    } else {
+        ProbeOutcome::NativeUnprobed
+    }
 }
 
 /// Encoder auto should use when a hardware candidate was left `NativeUnprobed`.
 /// That candidate is skipped by `choose_from_probe`; if it was the legacy pick (NVENC when
 /// NVIDIA is present), keep the legacy encoder. Otherwise use the probe choice.
-pub fn chosen_after_native(nvidia: bool, order: &[Encoder], outcomes: &[ProbeOutcome], probed: Encoder) -> Encoder {
+pub fn chosen_after_native(
+    nvidia: bool,
+    order: &[Encoder],
+    outcomes: &[ProbeOutcome],
+    probed: Encoder,
+) -> Encoder {
     let legacy = legacy_auto(nvidia);
-    let native_legacy = order.iter().zip(outcomes.iter()).any(|(e, o)| {
-        *e == legacy && matches!(o, ProbeOutcome::NativeUnprobed)
-    });
-    if native_legacy { legacy } else { probed }
+    let native_legacy = order
+        .iter()
+        .zip(outcomes.iter())
+        .any(|(e, o)| *e == legacy && matches!(o, ProbeOutcome::NativeUnprobed));
+    if native_legacy {
+        legacy
+    } else {
+        probed
+    }
 }
 
 /// How long a hardware-candidate failure stays cached. A boot-time NVENC miss
@@ -149,9 +182,21 @@ pub struct ProbeReport {
 }
 
 impl ProbeReport {
-    pub fn fresh(order: Vec<Encoder>, outcomes: Vec<ProbeOutcome>, chosen: Encoder, now: std::time::Instant, nvidia: bool) -> Self {
+    pub fn fresh(
+        order: Vec<Encoder>,
+        outcomes: Vec<ProbeOutcome>,
+        chosen: Encoder,
+        now: std::time::Instant,
+        nvidia: bool,
+    ) -> Self {
         let expires_at = probe_failure_deadline(&order, &outcomes, chosen, now);
-        Self { order, outcomes, chosen, expires_at, nvidia }
+        Self {
+            order,
+            outcomes,
+            chosen,
+            expires_at,
+            nvidia,
+        }
     }
 }
 
@@ -213,16 +258,23 @@ pub fn should_warm_auto_probe(source: Source) -> bool {
 
 /// First candidate that produced an IDR, else CPU.
 pub fn choose_from_probe(order: &[Encoder], outcomes: &[ProbeOutcome]) -> Encoder {
-    order.iter().zip(outcomes.iter()).find_map(|(e, o)| o.ok().then_some(*e)).unwrap_or(Encoder::Cpu)
+    order
+        .iter()
+        .zip(outcomes.iter())
+        .find_map(|(e, o)| o.ok().then_some(*e))
+        .unwrap_or(Encoder::Cpu)
 }
 
 fn cache() -> &'static std::sync::Mutex<Option<ProbeReport>> {
-    static CACHE: std::sync::OnceLock<std::sync::Mutex<Option<ProbeReport>>> = std::sync::OnceLock::new();
+    static CACHE: std::sync::OnceLock<std::sync::Mutex<Option<ProbeReport>>> =
+        std::sync::OnceLock::new();
     CACHE.get_or_init(|| std::sync::Mutex::new(None))
 }
 
 pub fn store_probe(report: ProbeReport) {
-    if let Ok(mut slot) = cache().lock() { *slot = Some(report); }
+    if let Ok(mut slot) = cache().lock() {
+        *slot = Some(report);
+    }
 }
 
 pub fn cached_probe() -> Option<ProbeReport> {
@@ -236,11 +288,13 @@ pub(crate) static PROBE_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(
 
 /// Tests that read or bump the process-global reload generation share this lock.
 #[cfg(test)]
-pub(crate) static RELOAD_TEST_LOCK:std::sync::Mutex<()> = std::sync::Mutex::new(());
+pub(crate) static RELOAD_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 #[cfg(test)]
 pub fn clear_probe() {
-    if let Ok(mut slot) = cache().lock() { *slot = None; }
+    if let Ok(mut slot) = cache().lock() {
+        *slot = None;
+    }
 }
 
 /// Why a live desktop encoder was asked to change.
@@ -266,9 +320,16 @@ pub struct SwitchPlan {
 
 /// Compare the selection this stream is using with a freshly read one.
 /// Codec preference is the stored preference, not the negotiated m-line codec.
-pub fn plan_switch(active_encoder: Encoder, previous_codec: CodecPref, next: &Selection, active_chroma: u64) -> Option<SwitchPlan> {
+pub fn plan_switch(
+    active_encoder: Encoder,
+    previous_codec: CodecPref,
+    next: &Selection,
+    active_chroma: u64,
+) -> Option<SwitchPlan> {
     if next.encoder != active_encoder {
-        let chroma = if active_chroma == crate::capture_setting::CHROMA_444 && !crate::video::full_chroma_for(next.encoder) {
+        let chroma = if active_chroma == crate::capture_setting::CHROMA_444
+            && !crate::video::full_chroma_for(next.encoder)
+        {
             crate::capture_setting::CHROMA_420
         } else {
             active_chroma
@@ -342,7 +403,14 @@ pub fn selection_with(report: Option<&ProbeReport>) -> Selection {
     let (file_enc, file_codec) = file_fields();
     let env_enc = std::env::var("UU_VIDEO_ENCODER").ok();
     let env_codec = std::env::var("UU_VIDEO_CODEC").ok();
-    resolve_pair(file_enc.as_deref(), env_enc.as_deref(), file_codec.as_deref(), env_codec.as_deref(), crate::video::nvidia_present(), report)
+    resolve_pair(
+        file_enc.as_deref(),
+        env_enc.as_deref(),
+        file_codec.as_deref(),
+        env_codec.as_deref(),
+        crate::video::nvidia_present(),
+        report,
+    )
 }
 
 pub fn resolve_pair(
@@ -377,7 +445,11 @@ pub fn resolve_pair(
     }
 }
 
-fn pick_encoder(env: Option<&str>, nvidia: bool, probed: Option<&ProbeReport>) -> (Encoder, Source) {
+fn pick_encoder(
+    env: Option<&str>,
+    nvidia: bool,
+    probed: Option<&ProbeReport>,
+) -> (Encoder, Source) {
     match parse_encoder(env) {
         Some(Some(e)) => (e, Source::Env),
         None => {
@@ -389,7 +461,9 @@ fn pick_encoder(env: Option<&str>, nvidia: bool, probed: Option<&ProbeReport>) -
 }
 
 fn auto_encoder(nvidia: bool, probed: Option<&ProbeReport>) -> Encoder {
-    probed.map(|p| p.chosen).unwrap_or_else(|| legacy_auto(nvidia))
+    probed
+        .map(|p| p.chosen)
+        .unwrap_or_else(|| legacy_auto(nvidia))
 }
 
 fn pick_codec(env: Option<&str>) -> (CodecPref, Source) {
@@ -512,9 +586,19 @@ mod tests {
     #[test]
     fn process_failure_keeps_native_candidate_unprobed() {
         let exit = ProbeOutcome::Fail(ProbeFail::Exit);
-        assert_eq!(outcome_for_candidate(ProbeOutcome::Ok, true), ProbeOutcome::Ok);
-        assert_eq!(outcome_for_candidate(exit, false), exit, "default build keeps the process result");
-        assert_eq!(outcome_for_candidate(exit, true), ProbeOutcome::NativeUnprobed);
+        assert_eq!(
+            outcome_for_candidate(ProbeOutcome::Ok, true),
+            ProbeOutcome::Ok
+        );
+        assert_eq!(
+            outcome_for_candidate(exit, false),
+            exit,
+            "default build keeps the process result"
+        );
+        assert_eq!(
+            outcome_for_candidate(exit, true),
+            ProbeOutcome::NativeUnprobed
+        );
         assert!(!ProbeOutcome::NativeUnprobed.ok());
         assert_eq!(ProbeOutcome::NativeUnprobed.label(), "native_unprobed");
     }
@@ -525,17 +609,32 @@ mod tests {
         let outcomes = [ProbeOutcome::NativeUnprobed, ProbeOutcome::Ok];
         let probed = choose_from_probe(&order, &outcomes);
         assert_eq!(probed, Encoder::Cpu);
-        assert_eq!(chosen_after_native(true, &order, &outcomes, probed), Encoder::Nvenc);
+        assert_eq!(
+            chosen_after_native(true, &order, &outcomes, probed),
+            Encoder::Nvenc
+        );
         let cpu_only = auto_order(false);
-        assert_eq!(chosen_after_native(false, &cpu_only, &[ProbeOutcome::Ok], Encoder::Cpu), Encoder::Cpu);
+        assert_eq!(
+            chosen_after_native(false, &cpu_only, &[ProbeOutcome::Ok], Encoder::Cpu),
+            Encoder::Cpu
+        );
         let both_ok = [ProbeOutcome::Ok, ProbeOutcome::Ok];
-        assert_eq!(chosen_after_native(true, &order, &both_ok, Encoder::Nvenc), Encoder::Nvenc);
+        assert_eq!(
+            chosen_after_native(true, &order, &both_ok, Encoder::Nvenc),
+            Encoder::Nvenc
+        );
     }
 
     fn probe_report(nvidia: bool, outcomes: &[ProbeOutcome]) -> ProbeReport {
         let order = auto_order(nvidia);
         let chosen = choose_from_probe(&order, outcomes);
-        ProbeReport::fresh(order, outcomes.to_vec(), chosen, std::time::Instant::now(), nvidia)
+        ProbeReport::fresh(
+            order,
+            outcomes.to_vec(),
+            chosen,
+            std::time::Instant::now(),
+            nvidia,
+        )
     }
 
     #[test]
@@ -548,64 +647,154 @@ mod tests {
 
     #[test]
     fn auto_falls_back_when_the_first_candidate_fails() {
-        let both = probe_report(true, &[ProbeOutcome::Fail(ProbeFail::NoIdr), ProbeOutcome::Fail(ProbeFail::Exit)]);
+        let both = probe_report(
+            true,
+            &[
+                ProbeOutcome::Fail(ProbeFail::NoIdr),
+                ProbeOutcome::Fail(ProbeFail::Exit),
+            ],
+        );
         assert_eq!(both.chosen, Encoder::Cpu);
         let nv = probe_report(true, &[ProbeOutcome::Ok, ProbeOutcome::Ok]);
         assert_eq!(nv.chosen, Encoder::Nvenc);
-        let failed = probe_report(true, &[ProbeOutcome::Fail(ProbeFail::Timeout), ProbeOutcome::Ok]);
+        let failed = probe_report(
+            true,
+            &[ProbeOutcome::Fail(ProbeFail::Timeout), ProbeOutcome::Ok],
+        );
         assert_eq!(failed.chosen, Encoder::Cpu);
-        assert_eq!(resolve_pair(None, None, None, None, true, Some(&nv)).encoder, Encoder::Nvenc);
-        assert_eq!(resolve_pair(None, None, None, None, true, Some(&failed)).encoder, Encoder::Cpu);
+        assert_eq!(
+            resolve_pair(None, None, None, None, true, Some(&nv)).encoder,
+            Encoder::Nvenc
+        );
+        assert_eq!(
+            resolve_pair(None, None, None, None, true, Some(&failed)).encoder,
+            Encoder::Cpu
+        );
         let cpu = probe_report(false, &[ProbeOutcome::Ok]);
         assert_eq!(cpu.chosen, Encoder::Cpu);
-        assert_eq!(resolve_pair(None, None, None, None, false, Some(&cpu)).encoder, Encoder::Cpu);
+        assert_eq!(
+            resolve_pair(None, None, None, None, false, Some(&cpu)).encoder,
+            Encoder::Cpu
+        );
         let skipped = probe_report(false, &[ProbeOutcome::NotProbed]);
         assert_eq!(skipped.chosen, Encoder::Cpu);
-        assert_eq!(ProbeOutcome::NotProbed.label(), "not probed (only candidate)");
+        assert_eq!(
+            ProbeOutcome::NotProbed.label(),
+            "not probed (only candidate)"
+        );
         assert!(!ProbeOutcome::NotProbed.ok());
-        assert_eq!(resolve_pair(None, None, None, None, false, Some(&skipped)).encoder, Encoder::Cpu);
+        assert_eq!(
+            resolve_pair(None, None, None, None, false, Some(&skipped)).encoder,
+            Encoder::Cpu
+        );
     }
 
     #[test]
     fn explicit_env_and_setting_ignore_the_probe() {
         let va = probe_report(true, &[ProbeOutcome::Ok, ProbeOutcome::Ok]);
-        assert_eq!(resolve_pair(None, Some("nvenc"), None, None, false, Some(&va)).encoder, Encoder::Nvenc);
-        assert_eq!(resolve_pair(None, Some("cpu"), None, None, true, Some(&va)).encoder, Encoder::Cpu);
-        assert_eq!(resolve_pair(Some("vaapi"), Some("nvenc"), None, None, true, Some(&va)).encoder, Encoder::Vaapi);
-        assert_eq!(resolve_pair(Some("nvenc"), None, None, None, false, Some(&va)).encoder_source, Source::Setting);
-        assert_eq!(resolve_pair(None, Some("cpu"), None, None, false, Some(&va)).encoder_source, Source::Env);
-        assert_eq!(resolve_pair(Some("auto"), Some("vaapi"), None, None, false, None).encoder, Encoder::Vaapi);
-        assert_eq!(resolve_pair(None, None, None, Some("h264"), false, Some(&va)).codec_pref, CodecPref::H264);
+        assert_eq!(
+            resolve_pair(None, Some("nvenc"), None, None, false, Some(&va)).encoder,
+            Encoder::Nvenc
+        );
+        assert_eq!(
+            resolve_pair(None, Some("cpu"), None, None, true, Some(&va)).encoder,
+            Encoder::Cpu
+        );
+        assert_eq!(
+            resolve_pair(Some("vaapi"), Some("nvenc"), None, None, true, Some(&va)).encoder,
+            Encoder::Vaapi
+        );
+        assert_eq!(
+            resolve_pair(Some("nvenc"), None, None, None, false, Some(&va)).encoder_source,
+            Source::Setting
+        );
+        assert_eq!(
+            resolve_pair(None, Some("cpu"), None, None, false, Some(&va)).encoder_source,
+            Source::Env
+        );
+        assert_eq!(
+            resolve_pair(Some("auto"), Some("vaapi"), None, None, false, None).encoder,
+            Encoder::Vaapi
+        );
+        assert_eq!(
+            resolve_pair(None, None, None, Some("h264"), false, Some(&va)).codec_pref,
+            CodecPref::H264
+        );
     }
 
     fn selection_of(encoder: Encoder, codec: CodecPref) -> Selection {
-        Selection { encoder, encoder_source: Source::Setting, codec_pref: codec, codec_source: Source::Setting }
+        Selection {
+            encoder,
+            encoder_source: Source::Setting,
+            codec_pref: codec,
+            codec_source: Source::Setting,
+        }
     }
 
     #[test]
     fn live_switch_restarts_encoder_and_defers_codec() {
         let nv = selection_of(Encoder::Nvenc, CodecPref::Auto);
-        assert!(plan_switch(Encoder::Nvenc, CodecPref::Auto, &nv, crate::capture_setting::CHROMA_420).is_none());
-        let to_cpu = plan_switch(Encoder::Nvenc, CodecPref::Auto, &selection_of(Encoder::Cpu, CodecPref::Auto), crate::capture_setting::CHROMA_444).unwrap();
+        assert!(plan_switch(
+            Encoder::Nvenc,
+            CodecPref::Auto,
+            &nv,
+            crate::capture_setting::CHROMA_420
+        )
+        .is_none());
+        let to_cpu = plan_switch(
+            Encoder::Nvenc,
+            CodecPref::Auto,
+            &selection_of(Encoder::Cpu, CodecPref::Auto),
+            crate::capture_setting::CHROMA_444,
+        )
+        .unwrap();
         assert_eq!(to_cpu.encoder, Some(Encoder::Cpu));
         assert_eq!(to_cpu.reason, SwitchReason::Encoder);
         assert!(!to_cpu.chroma_downgraded);
         assert_eq!(to_cpu.chroma, crate::capture_setting::CHROMA_444);
-        let to_vaapi = plan_switch(Encoder::Nvenc, CodecPref::H265, &selection_of(Encoder::Vaapi, CodecPref::H265), crate::capture_setting::CHROMA_444).unwrap();
+        let to_vaapi = plan_switch(
+            Encoder::Nvenc,
+            CodecPref::H265,
+            &selection_of(Encoder::Vaapi, CodecPref::H265),
+            crate::capture_setting::CHROMA_444,
+        )
+        .unwrap();
         assert_eq!(to_vaapi.encoder, Some(Encoder::Vaapi));
         assert!(to_vaapi.chroma_downgraded);
         assert_eq!(to_vaapi.chroma, crate::capture_setting::CHROMA_420);
-        let codec = plan_switch(Encoder::Nvenc, CodecPref::Auto, &selection_of(Encoder::Nvenc, CodecPref::H264), crate::capture_setting::CHROMA_420).unwrap();
+        let codec = plan_switch(
+            Encoder::Nvenc,
+            CodecPref::Auto,
+            &selection_of(Encoder::Nvenc, CodecPref::H264),
+            crate::capture_setting::CHROMA_420,
+        )
+        .unwrap();
         assert_eq!(codec.encoder, None);
         assert_eq!(codec.reason, SwitchReason::CodecDeferred);
-        let both = plan_switch(Encoder::Cpu, CodecPref::Auto, &selection_of(Encoder::Nvenc, CodecPref::H264), crate::capture_setting::CHROMA_420).unwrap();
+        let both = plan_switch(
+            Encoder::Cpu,
+            CodecPref::Auto,
+            &selection_of(Encoder::Nvenc, CodecPref::H264),
+            crate::capture_setting::CHROMA_420,
+        )
+        .unwrap();
         assert_eq!(both.encoder, Some(Encoder::Nvenc));
         assert_eq!(both.reason, SwitchReason::Encoder);
         // The log reason is the source of the new selection (setting / env / auto), not a fixed word.
-        for (source, label) in [(Source::Setting, "setting"), (Source::Env, "env"), (Source::Auto, "auto")] {
+        for (source, label) in [
+            (Source::Setting, "setting"),
+            (Source::Env, "env"),
+            (Source::Auto, "auto"),
+        ] {
             let mut next = selection_of(Encoder::Vaapi, CodecPref::Auto);
             next.encoder_source = source;
-            let plan = plan_switch(Encoder::Nvenc, CodecPref::Auto, &next, crate::capture_setting::CHROMA_420).unwrap();
+            let plan = plan_switch(
+                Encoder::Nvenc,
+                CodecPref::Auto,
+                &next,
+                crate::capture_setting::CHROMA_420,
+            )
+            .unwrap();
             assert!(plan.encoder.is_some());
             assert_eq!(encoder_source_label(next.encoder_source), label);
         }
@@ -622,7 +811,10 @@ mod tests {
         assert_eq!(reload_generation_value(), before + 1);
         assert_eq!(cached_probe(), Some(report));
         assert!(reload_since_session(before, reload_generation_value()));
-        assert!(!reload_since_session(reload_generation_value(), reload_generation_value()));
+        assert!(!reload_since_session(
+            reload_generation_value(),
+            reload_generation_value()
+        ));
         clear_probe();
     }
 
@@ -639,7 +831,10 @@ mod tests {
     #[test]
     fn mark_reload_seen_clears_has_changed() {
         let _reload = RELOAD_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
         rt.block_on(async {
             let mut watch = subscribe_reload();
             let _ = watch.borrow_and_update();
@@ -657,14 +852,23 @@ mod tests {
     fn auto_codec_follows_the_encoder_chosen_at_session_setup() {
         use crate::capture_setting::{preferred_codec_for, VideoCodec};
 
-        let cpu_fallback = probe_report(true, &[ProbeOutcome::Fail(ProbeFail::NoIdr), ProbeOutcome::Ok]);
+        let cpu_fallback = probe_report(
+            true,
+            &[ProbeOutcome::Fail(ProbeFail::NoIdr), ProbeOutcome::Ok],
+        );
         let session = resolve_pair(None, None, None, None, true, Some(&cpu_fallback));
-        assert_eq!((session.encoder, session.encoder_source, session.codec_pref), (Encoder::Cpu, Source::Auto, CodecPref::Auto));
+        assert_eq!(
+            (session.encoder, session.encoder_source, session.codec_pref),
+            (Encoder::Cpu, Source::Auto, CodecPref::Auto)
+        );
         assert_eq!(preferred_codec_for(true, true, session), VideoCodec::H264);
         // Not the H.265 an unfinished probe would pick for legacy NVENC.
         let early_nvenc = resolve_pair(None, None, None, None, true, None);
         assert_eq!(early_nvenc.encoder, Encoder::Nvenc);
-        assert_eq!(preferred_codec_for(true, true, early_nvenc), VideoCodec::H265);
+        assert_eq!(
+            preferred_codec_for(true, true, early_nvenc),
+            VideoCodec::H265
+        );
 
         let nvenc_ok = probe_report(true, &[ProbeOutcome::Ok, ProbeOutcome::Ok]);
         let nvenc = resolve_pair(None, None, None, None, true, Some(&nvenc_ok));
@@ -673,18 +877,35 @@ mod tests {
 
         let order = auto_order(true);
         let unprobed = [ProbeOutcome::NativeUnprobed, ProbeOutcome::Ok];
-        let chosen = chosen_after_native(true, &order, &unprobed, choose_from_probe(&order, &unprobed));
-        let report = ProbeReport::fresh(order.clone(), unprobed.to_vec(), chosen, std::time::Instant::now(), true);
+        let chosen = chosen_after_native(
+            true,
+            &order,
+            &unprobed,
+            choose_from_probe(&order, &unprobed),
+        );
+        let report = ProbeReport::fresh(
+            order.clone(),
+            unprobed.to_vec(),
+            chosen,
+            std::time::Instant::now(),
+            true,
+        );
         let native = resolve_pair(None, None, None, None, true, Some(&report));
         assert_eq!(native.encoder, Encoder::Nvenc);
         assert_eq!(preferred_codec_for(true, true, native), VideoCodec::H265);
 
         let forced_h264 = resolve_pair(None, None, Some("h264"), None, true, Some(&nvenc_ok));
         assert_eq!(forced_h264.encoder, Encoder::Nvenc);
-        assert_eq!(preferred_codec_for(true, true, forced_h264), VideoCodec::H264);
+        assert_eq!(
+            preferred_codec_for(true, true, forced_h264),
+            VideoCodec::H264
+        );
         let forced_h265 = resolve_pair(None, None, None, Some("h265"), true, Some(&cpu_fallback));
         assert_eq!(forced_h265.encoder, Encoder::Cpu);
-        assert_eq!(preferred_codec_for(true, true, forced_h265), VideoCodec::H265);
+        assert_eq!(
+            preferred_codec_for(true, true, forced_h265),
+            VideoCodec::H265
+        );
     }
 
     #[test]
@@ -693,14 +914,29 @@ mod tests {
         clear_probe();
         assert!(cached_probe().is_none());
         let early = resolve_pair(None, None, None, None, false, None);
-        assert_eq!((early.encoder, early.encoder_source), (Encoder::Cpu, Source::Auto));
-        assert_eq!(resolve_pair(None, None, None, None, true, None).encoder, Encoder::Nvenc);
-        store_probe(probe_report(true, &[ProbeOutcome::Fail(ProbeFail::Exit), ProbeOutcome::Ok]));
+        assert_eq!(
+            (early.encoder, early.encoder_source),
+            (Encoder::Cpu, Source::Auto)
+        );
+        assert_eq!(
+            resolve_pair(None, None, None, None, true, None).encoder,
+            Encoder::Nvenc
+        );
+        store_probe(probe_report(
+            true,
+            &[ProbeOutcome::Fail(ProbeFail::Exit), ProbeOutcome::Ok],
+        ));
         assert_eq!(cached_probe().unwrap().chosen, Encoder::Cpu);
-        assert_eq!(resolve_pair(None, None, None, None, true, cached_probe().as_ref()).encoder, Encoder::Cpu);
+        assert_eq!(
+            resolve_pair(None, None, None, None, true, cached_probe().as_ref()).encoder,
+            Encoder::Cpu
+        );
         // A snapshot taken before the cache filled stays on the legacy encoder.
         assert_eq!(early.encoder, Encoder::Cpu);
-        assert_eq!(resolve_pair(None, None, None, None, true, None).encoder, Encoder::Nvenc);
+        assert_eq!(
+            resolve_pair(None, None, None, None, true, None).encoder,
+            Encoder::Nvenc
+        );
         clear_probe();
     }
 
@@ -708,10 +944,22 @@ mod tests {
     fn success_and_not_probed_do_not_expire() {
         let now = std::time::Instant::now();
         let later = now + PROBE_FAILURE_TTL + std::time::Duration::from_secs(1);
-        let ok = ProbeReport::fresh(auto_order(true), vec![ProbeOutcome::Ok, ProbeOutcome::Ok], Encoder::Nvenc, now, true);
+        let ok = ProbeReport::fresh(
+            auto_order(true),
+            vec![ProbeOutcome::Ok, ProbeOutcome::Ok],
+            Encoder::Nvenc,
+            now,
+            true,
+        );
         assert!(ok.expires_at.is_none());
         assert!(!probe_expired(&ok, later));
-        let skipped = ProbeReport::fresh(auto_order(false), vec![ProbeOutcome::NotProbed], Encoder::Cpu, now, false);
+        let skipped = ProbeReport::fresh(
+            auto_order(false),
+            vec![ProbeOutcome::NotProbed],
+            Encoder::Cpu,
+            now,
+            false,
+        );
         assert!(skipped.expires_at.is_none());
         assert!(!probe_expired(&skipped, later));
         let native = ProbeReport::fresh(
@@ -721,7 +969,10 @@ mod tests {
             now,
             true,
         );
-        assert!(native.expires_at.is_none(), "native_unprobed is not a recorded process failure");
+        assert!(
+            native.expires_at.is_none(),
+            "native_unprobed is not a recorded process failure"
+        );
         assert!(!probe_expired(&native, later));
     }
 
@@ -735,7 +986,10 @@ mod tests {
             now,
             true,
         );
-        assert!(!probe_expired(&failed, now + PROBE_FAILURE_TTL - std::time::Duration::from_secs(1)));
+        assert!(!probe_expired(
+            &failed,
+            now + PROBE_FAILURE_TTL - std::time::Duration::from_secs(1)
+        ));
         assert!(probe_expired(&failed, now + PROBE_FAILURE_TTL));
         assert_eq!(failed.chosen, Encoder::Cpu);
     }
@@ -755,7 +1009,10 @@ mod tests {
         );
         assert_eq!(report.chosen, Encoder::Nvenc);
         assert!(report.expires_at.is_none());
-        assert!(!probe_expired(&report, now + PROBE_FAILURE_TTL + std::time::Duration::from_secs(1)));
+        assert!(!probe_expired(
+            &report,
+            now + PROBE_FAILURE_TTL + std::time::Duration::from_secs(1)
+        ));
         let cpu_only_fail = ProbeReport::fresh(
             auto_order(false),
             vec![ProbeOutcome::Fail(ProbeFail::Exit)],
@@ -763,7 +1020,10 @@ mod tests {
             now,
             false,
         );
-        assert!(cpu_only_fail.expires_at.is_none(), "a CPU-only Fail is not a hardware fallback");
+        assert!(
+            cpu_only_fail.expires_at.is_none(),
+            "a CPU-only Fail is not a hardware fallback"
+        );
     }
 
     /// Failed NVENC stays CPU until `PROBE_FAILURE_TTL`. After that a desktop connection
@@ -784,14 +1044,20 @@ mod tests {
         );
         store_probe(failed);
         let before = t0 + PROBE_FAILURE_TTL - std::time::Duration::from_secs(1);
-        assert!(!probe_needs_run(before, true), "no re-probe before the failure expires");
+        assert!(
+            !probe_needs_run(before, true),
+            "no re-probe before the failure expires"
+        );
         assert_eq!(
             resolve_pair(None, None, None, None, true, cached_probe().as_ref()).encoder,
             Encoder::Cpu
         );
         let after = t0 + PROBE_FAILURE_TTL;
         assert!(probe_expired(cached_probe().as_ref().unwrap(), after));
-        assert!(probe_needs_run(after, true), "desktop connection starts one background re-probe");
+        assert!(
+            probe_needs_run(after, true),
+            "desktop connection starts one background re-probe"
+        );
         assert_eq!(
             resolve_pair(None, None, None, None, true, cached_probe().as_ref()).encoder,
             Encoder::Cpu,
@@ -809,7 +1075,10 @@ mod tests {
             resolve_pair(None, None, None, None, true, cached_probe().as_ref()).encoder,
             Encoder::Nvenc
         );
-        assert!(!probe_needs_run(after + PROBE_FAILURE_TTL + std::time::Duration::from_secs(1), true));
+        assert!(!probe_needs_run(
+            after + PROBE_FAILURE_TTL + std::time::Duration::from_secs(1),
+            true
+        ));
         let failed_again = ProbeReport::fresh(
             auto_order(true),
             vec![ProbeOutcome::Fail(ProbeFail::Timeout), ProbeOutcome::Ok],
@@ -818,7 +1087,10 @@ mod tests {
             true,
         );
         store_probe(failed_again);
-        assert!(!probe_needs_run(after + PROBE_FAILURE_TTL - std::time::Duration::from_secs(1), true));
+        assert!(!probe_needs_run(
+            after + PROBE_FAILURE_TTL - std::time::Duration::from_secs(1),
+            true
+        ));
         assert!(probe_needs_run(after + PROBE_FAILURE_TTL, true));
         clear_probe();
     }
@@ -831,12 +1103,34 @@ mod tests {
     #[test]
     fn nvidia_presence_change_makes_probe_stale() {
         let now = std::time::Instant::now();
-        let cpu_only = ProbeReport::fresh(auto_order(false), vec![ProbeOutcome::NotProbed], Encoder::Cpu, now, false);
-        assert!(!probe_stale(&cpu_only, now + PROBE_FAILURE_TTL + std::time::Duration::from_secs(1), false));
-        assert!(probe_stale(&cpu_only, now, true), "NVIDIA appeared after the CPU-only skip");
-        let nvenc_ok = ProbeReport::fresh(auto_order(true), vec![ProbeOutcome::Ok, ProbeOutcome::Ok], Encoder::Nvenc, now, true);
+        let cpu_only = ProbeReport::fresh(
+            auto_order(false),
+            vec![ProbeOutcome::NotProbed],
+            Encoder::Cpu,
+            now,
+            false,
+        );
+        assert!(!probe_stale(
+            &cpu_only,
+            now + PROBE_FAILURE_TTL + std::time::Duration::from_secs(1),
+            false
+        ));
+        assert!(
+            probe_stale(&cpu_only, now, true),
+            "NVIDIA appeared after the CPU-only skip"
+        );
+        let nvenc_ok = ProbeReport::fresh(
+            auto_order(true),
+            vec![ProbeOutcome::Ok, ProbeOutcome::Ok],
+            Encoder::Nvenc,
+            now,
+            true,
+        );
         assert!(!probe_stale(&nvenc_ok, now, true));
-        assert!(probe_stale(&nvenc_ok, now, false), "NVIDIA gone after a successful NVENC probe");
+        assert!(
+            probe_stale(&nvenc_ok, now, false),
+            "NVIDIA gone after a successful NVENC probe"
+        );
 
         let _guard = PROBE_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         clear_probe();
@@ -865,8 +1159,14 @@ mod tests {
             true,
         );
         assert!(failed.expires_at.is_some());
-        assert_eq!(reprobe_reason(Some(&failed), true), Some("retry after failure"));
-        assert_eq!(reprobe_reason(Some(&failed), false), Some("retry after failure"));
+        assert_eq!(
+            reprobe_reason(Some(&failed), true),
+            Some("retry after failure")
+        );
+        assert_eq!(
+            reprobe_reason(Some(&failed), false),
+            Some("retry after failure")
+        );
 
         let nvenc_ok = ProbeReport::fresh(
             auto_order(true),
@@ -876,13 +1176,31 @@ mod tests {
             true,
         );
         assert_eq!(reprobe_reason(Some(&nvenc_ok), true), None);
-        assert_eq!(reprobe_reason(Some(&nvenc_ok), false), Some("NVIDIA availability changed"));
+        assert_eq!(
+            reprobe_reason(Some(&nvenc_ok), false),
+            Some("NVIDIA availability changed")
+        );
 
-        let skipped = ProbeReport::fresh(auto_order(false), vec![ProbeOutcome::NotProbed], Encoder::Cpu, now, false);
+        let skipped = ProbeReport::fresh(
+            auto_order(false),
+            vec![ProbeOutcome::NotProbed],
+            Encoder::Cpu,
+            now,
+            false,
+        );
         assert_eq!(reprobe_reason(Some(&skipped), false), None);
-        assert_eq!(reprobe_reason(Some(&skipped), true), Some("NVIDIA availability changed"));
-        assert_ne!(reprobe_reason(Some(&nvenc_ok), false), Some("retry after failure"));
-        assert_ne!(reprobe_reason(Some(&skipped), true), Some("retry after failure"));
+        assert_eq!(
+            reprobe_reason(Some(&skipped), true),
+            Some("NVIDIA availability changed")
+        );
+        assert_ne!(
+            reprobe_reason(Some(&nvenc_ok), false),
+            Some("retry after failure")
+        );
+        assert_ne!(
+            reprobe_reason(Some(&skipped), true),
+            Some("retry after failure")
+        );
     }
 
     #[test]
@@ -890,8 +1208,17 @@ mod tests {
         assert!(should_warm_auto_probe(Source::Auto));
         assert!(!should_warm_auto_probe(Source::Setting));
         assert!(!should_warm_auto_probe(Source::Env));
-        assert_eq!(resolve_pair(Some("cpu"), None, None, None, true, None).encoder_source, Source::Setting);
-        assert_eq!(resolve_pair(None, Some("nvenc"), None, None, false, None).encoder_source, Source::Env);
-        assert_eq!(resolve_pair(None, Some("auto"), None, None, false, None).encoder_source, Source::Auto);
+        assert_eq!(
+            resolve_pair(Some("cpu"), None, None, None, true, None).encoder_source,
+            Source::Setting
+        );
+        assert_eq!(
+            resolve_pair(None, Some("nvenc"), None, None, false, None).encoder_source,
+            Source::Env
+        );
+        assert_eq!(
+            resolve_pair(None, Some("auto"), None, None, false, None).encoder_source,
+            Source::Auto
+        );
     }
 }

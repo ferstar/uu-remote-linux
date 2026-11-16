@@ -13,8 +13,11 @@ pub(crate) fn test_env_lock() -> &'static std::sync::Mutex<()> {
 }
 
 pub fn path() -> PathBuf {
-    if let Some(p) = std::env::var_os("UU_CONFIG") { return PathBuf::from(p); }
-    let base = std::env::var_os("XDG_CONFIG_HOME").map(PathBuf::from)
+    if let Some(p) = std::env::var_os("UU_CONFIG") {
+        return PathBuf::from(p);
+    }
+    let base = std::env::var_os("XDG_CONFIG_HOME")
+        .map(PathBuf::from)
         .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))
         .unwrap_or_else(|| PathBuf::from("."));
     base.join("uuremote/config.json")
@@ -24,7 +27,9 @@ pub fn path() -> PathBuf {
 pub fn read_fresh() -> Result<Option<serde_json::Value>, String> {
     let p = path();
     match std::fs::read(&p) {
-        Ok(bytes) => serde_json::from_slice(&bytes).map(Some).map_err(|e| format!("invalid config {}: {e}", p.display())),
+        Ok(bytes) => serde_json::from_slice(&bytes)
+            .map(Some)
+            .map_err(|e| format!("invalid config {}: {e}", p.display())),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
         Err(e) => Err(format!("cannot read config {}: {e}", p.display())),
     }
@@ -36,25 +41,48 @@ pub fn file() -> Result<Option<&'static serde_json::Value>, String> {
     FILE.get_or_init(|| {
         let p = path();
         match std::fs::read(&p) {
-            Ok(bytes) => serde_json::from_slice(&bytes).map(Some).map_err(|e| format!("invalid config {}: {e}", p.display())),
+            Ok(bytes) => serde_json::from_slice(&bytes)
+                .map(Some)
+                .map_err(|e| format!("invalid config {}: {e}", p.display())),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
             Err(e) => Err(format!("cannot read config {}: {e}", p.display())),
         }
-    }).as_ref().map(|v| v.as_ref()).map_err(Clone::clone)
+    })
+    .as_ref()
+    .map(|v| v.as_ref())
+    .map_err(Clone::clone)
 }
 
 /// Optional bundled FFmpeg prefix: UU_FFMPEG_ROOT or config "ffmpeg_root".
 pub fn ffmpeg_root() -> Option<PathBuf> {
-    std::env::var_os("UU_FFMPEG_ROOT").filter(|v| !v.is_empty()).map(PathBuf::from)
-        .or_else(|| file().ok().flatten().and_then(|f| f.get("ffmpeg_root")).and_then(|v| v.as_str()).map(PathBuf::from))
+    std::env::var_os("UU_FFMPEG_ROOT")
+        .filter(|v| !v.is_empty())
+        .map(PathBuf::from)
+        .or_else(|| {
+            file()
+                .ok()
+                .flatten()
+                .and_then(|f| f.get("ffmpeg_root"))
+                .and_then(|v| v.as_str())
+                .map(PathBuf::from)
+        })
 }
 
 /// Reported client version (x-param-vn and User-Agent).
 /// Defaults to matching modern official Windows client (4.45.0.4318).
 /// Can be overridden via UU_CLIENT_VERSION or config "client_version".
 pub fn client_version() -> String {
-    std::env::var("UU_CLIENT_VERSION").ok().filter(|v| !v.is_empty())
-        .or_else(|| file().ok().flatten().and_then(|f| f.get("client_version")).and_then(|v| v.as_str()).map(str::to_owned))
+    std::env::var("UU_CLIENT_VERSION")
+        .ok()
+        .filter(|v| !v.is_empty())
+        .or_else(|| {
+            file()
+                .ok()
+                .flatten()
+                .and_then(|f| f.get("client_version"))
+                .and_then(|v| v.as_str())
+                .map(str::to_owned)
+        })
         .unwrap_or_else(|| "4.45.0.4318".into())
 }
 
@@ -62,7 +90,16 @@ pub fn client_version() -> String {
 /// Defaults to matching modern official Windows client (4318).
 /// Can be overridden via UU_VERSION_CODE or config "version_code".
 pub fn version_code() -> String {
-    std::env::var("UU_VERSION_CODE").ok().filter(|v| !v.is_empty())
-        .or_else(|| file().ok().flatten().and_then(|f| f.get("version_code")).and_then(|v| v.as_str()).map(str::to_owned))
+    std::env::var("UU_VERSION_CODE")
+        .ok()
+        .filter(|v| !v.is_empty())
+        .or_else(|| {
+            file()
+                .ok()
+                .flatten()
+                .and_then(|f| f.get("version_code"))
+                .and_then(|v| v.as_str())
+                .map(str::to_owned)
+        })
         .unwrap_or_else(|| "4318".into())
 }

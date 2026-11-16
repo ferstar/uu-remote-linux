@@ -37,13 +37,23 @@ pub fn h264_device_capability(
 /// then kept quality and chroma locked at their defaults (#49). Only 8-bit and the chroma formats
 /// the encoder really produces are listed, each with its maximum size: the official viewer treats a
 /// 0x0 entry as unsupported (#77; the 4.37 host we copied had a GTX 660 without HEVC/4:4:4).
-pub fn device_capability(client_id: &str, ice_id: &str, display_id: i32, fps: i32, codec_impl: i32, hevc: bool, full_chroma: bool) -> Value {
+pub fn device_capability(
+    client_id: &str,
+    ice_id: &str,
+    display_id: i32,
+    fps: i32,
+    codec_impl: i32,
+    hevc: bool,
+    full_chroma: bool,
+) -> Value {
     let mut codecs = Vec::new();
     for codec in [VIDEO_CODEC_H264].into_iter().chain(hevc.then_some(2)) {
         for chroma in [1].into_iter().chain(full_chroma.then_some(3)) {
             let (width, height) = (3840, 2160);
-            codecs.push(json!({"video_codec": codec, "chroma_sampling": chroma, "codec_impl": codec_impl,
-                "bit_depth": 8, "width": width, "height": height}));
+            codecs.push(
+                json!({"video_codec": codec, "chroma_sampling": chroma, "codec_impl": codec_impl,
+                "bit_depth": 8, "width": width, "height": height}),
+            );
         }
     }
     json!({
@@ -61,7 +71,12 @@ pub fn device_capability(client_id: &str, ice_id: &str, display_id: i32, fps: i3
 
 /// Official `sender_para_info` (capture and encoder names; the Windows host sends "DXGI" /
 /// "NVIDIA NVENC") for the single video track.
-pub fn sender_para_info(client_id: &str, ice_id: &str, capture_impl: &str, encoder_impl: &str) -> Value {
+pub fn sender_para_info(
+    client_id: &str,
+    ice_id: &str,
+    capture_impl: &str,
+    encoder_impl: &str,
+) -> Value {
     json!({
         "client_id": client_id,
         "data": {
@@ -86,14 +101,32 @@ mod tests {
         assert!(payload.get("type").is_none());
         let caps = &payload["data"]["device_capability"]["video_codec_capability"];
         assert_eq!(caps.as_array().unwrap().len(), 4);
-        assert_eq!(caps[0], json!({"video_codec":1,"chroma_sampling":1,"codec_impl":5,"bit_depth":8,"width":3840,"height":2160}));
-        assert_eq!(caps[3], json!({"video_codec":2,"chroma_sampling":3,"codec_impl":5,"bit_depth":8,"width":3840,"height":2160}));
-        assert_eq!(payload["data"]["device_capability"]["display_info"][0]["hdr"], -1);
+        assert_eq!(
+            caps[0],
+            json!({"video_codec":1,"chroma_sampling":1,"codec_impl":5,"bit_depth":8,"width":3840,"height":2160})
+        );
+        assert_eq!(
+            caps[3],
+            json!({"video_codec":2,"chroma_sampling":3,"codec_impl":5,"bit_depth":8,"width":3840,"height":2160})
+        );
+        assert_eq!(
+            payload["data"]["device_capability"]["display_info"][0]["hdr"],
+            -1
+        );
         let h264_420 = device_capability("c", "i", 0, 60, 5, false, false);
-        assert_eq!(h264_420["data"]["device_capability"]["video_codec_capability"].as_array().unwrap().len(), 1);
+        assert_eq!(
+            h264_420["data"]["device_capability"]["video_codec_capability"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
         let sender = sender_para_info("c", "i", "X11", "NVIDIA NVENC");
         assert_eq!(sender["data"]["type"], "sender_para_info");
-        assert_eq!(sender["data"]["sender_para_info"]["sender_media_infos"][0]["encoder_impl"], "NVIDIA NVENC");
+        assert_eq!(
+            sender["data"]["sender_para_info"]["sender_media_infos"][0]["encoder_impl"],
+            "NVIDIA NVENC"
+        );
     }
 
     #[test]

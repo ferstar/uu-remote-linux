@@ -7,54 +7,105 @@
 use super::super::tool::{gdbus, variant};
 use serde::{Deserialize, Serialize};
 
-fn call(object: &str, method: &str, args: &[&str]) -> Result<String, String> { gdbus("org.kde.KWin", object, method, args) }
+fn call(object: &str, method: &str, args: &[&str]) -> Result<String, String> {
+    gdbus("org.kde.KWin", object, method, args)
+}
 
 /// One blocked device. `Legacy` is a record written before identities were stored.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum Device {
-    Named { sys: String, name: String, product: u32, vendor: u32 },
+    Named {
+        sys: String,
+        name: String,
+        product: u32,
+        vendor: u32,
+    },
     Legacy(String),
 }
 
 impl Device {
     pub fn sys(&self) -> &str {
-        match self { Self::Named { sys, .. } | Self::Legacy(sys) => sys }
+        match self {
+            Self::Named { sys, .. } | Self::Legacy(sys) => sys,
+        }
     }
     fn name(&self) -> &str {
-        match self { Self::Named { name, .. } => name, Self::Legacy(sys) => sys }
+        match self {
+            Self::Named { name, .. } => name,
+            Self::Legacy(sys) => sys,
+        }
     }
     fn identity(&self) -> Option<(&str, u32, u32)> {
-        match self { Self::Named { name, product, vendor, .. } => Some((name, *product, *vendor)), Self::Legacy(_) => None }
+        match self {
+            Self::Named {
+                name,
+                product,
+                vendor,
+                ..
+            } => Some((name, *product, *vendor)),
+            Self::Legacy(_) => None,
+        }
     }
 }
 
 /// `'key': <uint32 16500>` carries a type prefix; strings and booleans do not.
-fn number(text: &str, key: &str) -> Option<u32> { variant(text, key)?.split_whitespace().last()?.parse().ok() }
+fn number(text: &str, key: &str) -> Option<u32> {
+    variant(text, key)?.split_whitespace().last()?.parse().ok()
+}
 
 #[derive(Clone, Copy, Default)]
-struct Flags { keyboard: bool, pointer: bool, touch: bool, switch: bool, enabled: bool }
+struct Flags {
+    keyboard: bool,
+    pointer: bool,
+    touch: bool,
+    switch: bool,
+    enabled: bool,
+}
 
 /// Every device KWin lists, blocked or not: restore must find a device that is still disabled.
 /// The flag says whether a property read failed. A restore re-enables the readable devices, then
 /// returns the flag as an error so its record and the guard stay for another attempt; blocking
 /// skips such a device, which is all it can do.
 fn enumerate() -> Result<(Vec<(Device, Flags)>, bool), String> {
-    let list = call("/org/kde/KWin/InputDevice", "org.freedesktop.DBus.Properties.Get", &["org.kde.KWin.InputDeviceManager", "devicesSysNames"])?;
+    let list = call(
+        "/org/kde/KWin/InputDevice",
+        "org.freedesktop.DBus.Properties.Get",
+        &["org.kde.KWin.InputDeviceManager", "devicesSysNames"],
+    )?;
     let mut devices = Vec::new();
     let mut incomplete = false;
-    for sys in list.split('\'').skip(1).step_by(2).filter(|n| n.strip_prefix("event").is_some_and(|d| !d.is_empty() && d.bytes().all(|b| b.is_ascii_digit()))) {
-        let text = match call(&format!("/org/kde/KWin/InputDevice/{sys}"), "org.freedesktop.DBus.Properties.GetAll", &["org.kde.KWin.InputDevice"]) {
+    for sys in list.split('\'').skip(1).step_by(2).filter(|n| {
+        n.strip_prefix("event")
+            .is_some_and(|d| !d.is_empty() && d.bytes().all(|b| b.is_ascii_digit()))
+    }) {
+        let text = match call(
+            &format!("/org/kde/KWin/InputDevice/{sys}"),
+            "org.freedesktop.DBus.Properties.GetAll",
+            &["org.kde.KWin.InputDevice"],
+        ) {
             Ok(text) => text,
-            Err(_) => { incomplete = true; continue; }
+            Err(_) => {
+                incomplete = true;
+                continue;
+            }
         };
         let yes = |key| variant(&text, key) == Some("true");
-        devices.push((Device::Named {
-            sys: sys.to_owned(),
-            name: variant(&text, "name").unwrap_or_default().to_owned(),
-            product: number(&text, "product").unwrap_or(0),
-            vendor: number(&text, "vendor").unwrap_or(0),
-        }, Flags { keyboard: yes("keyboard"), pointer: yes("pointer"), touch: yes("touch"), switch: yes("switchDevice"), enabled: yes("enabled") }));
+        devices.push((
+            Device::Named {
+                sys: sys.to_owned(),
+                name: variant(&text, "name").unwrap_or_default().to_owned(),
+                product: number(&text, "product").unwrap_or(0),
+                vendor: number(&text, "vendor").unwrap_or(0),
+            },
+            Flags {
+                keyboard: yes("keyboard"),
+                pointer: yes("pointer"),
+                touch: yes("touch"),
+                switch: yes("switchDevice"),
+                enabled: yes("enabled"),
+            },
+        ));
     }
     Ok((devices, incomplete))
 }
@@ -63,29 +114,47 @@ fn enumerate() -> Result<(Vec<(Device, Flags)>, bool), String> {
 /// button and switches (lid). Software devices fed by local hardware (gesture daemons, ydotoold)
 /// are blocked too.
 pub fn local() -> Result<Vec<Device>, String> {
-    Ok(enumerate()?.0.into_iter().filter(|(d, f)| {
-        (f.keyboard || f.pointer || f.touch) && !f.switch && f.enabled
-            && !d.name().starts_with("uu-remote-linux") && d.name() != "Power Button"
-    }).map(|(d, _)| d).collect())
+    Ok(enumerate()?
+        .0
+        .into_iter()
+        .filter(|(d, f)| {
+            (f.keyboard || f.pointer || f.touch)
+                && !f.switch
+                && f.enabled
+                && !d.name().starts_with("uu-remote-linux")
+                && d.name() != "Power Button"
+        })
+        .map(|(d, _)| d)
+        .collect())
 }
 
 /// Every current device matching `wanted`: same name/product/vendor, or the exact sysName for a
 /// legacy record. Several devices can share one identity (two identical keyboards, or one receiver
 /// exposing several event nodes under the same name), so callers must handle every match.
 fn matching<'a>(devices: &'a [Device], wanted: &Device) -> impl Iterator<Item = &'a Device> + 'a {
-    let identity = wanted.identity().map(|(name, product, vendor)| (name.to_owned(), product, vendor));
+    let identity = wanted
+        .identity()
+        .map(|(name, product, vendor)| (name.to_owned(), product, vendor));
     let sys = wanted.sys().to_owned();
-    devices.iter().filter(move |d| match (&identity, d.identity()) {
-        (Some((name, product, vendor)), Some((current, p, v))) => current == name && p == *product && v == *vendor,
-        _ => d.sys() == sys,
-    })
+    devices
+        .iter()
+        .filter(move |d| match (&identity, d.identity()) {
+            (Some((name, product, vendor)), Some((current, p, v))) => {
+                current == name && p == *product && v == *vendor
+            }
+            _ => d.sys() == sys,
+        })
 }
 
 fn set_sys<'a>(devices: impl Iterator<Item = &'a str>, enabled: bool) -> Result<(), String> {
     let value = if enabled { "<true>" } else { "<false>" };
     let mut failure = None;
     for sys in devices {
-        if let Err(e) = call(&format!("/org/kde/KWin/InputDevice/{sys}"), "org.freedesktop.DBus.Properties.Set", &["org.kde.KWin.InputDevice", "enabled", value]) {
+        if let Err(e) = call(
+            &format!("/org/kde/KWin/InputDevice/{sys}"),
+            "org.freedesktop.DBus.Properties.Set",
+            &["org.kde.KWin.InputDevice", "enabled", value],
+        ) {
             failure = Some(e);
         }
     }
@@ -104,9 +173,13 @@ fn restore_targets<'a>(now: &'a [Device], recorded: &[Device]) -> (Vec<&'a str>,
         let mut found = false;
         for current in matching(now, wanted) {
             found = true;
-            if !targets.contains(&current.sys()) { targets.push(current.sys()); }
+            if !targets.contains(&current.sys()) {
+                targets.push(current.sys());
+            }
         }
-        if !found { gone += 1; }
+        if !found {
+            gone += 1;
+        }
     }
     (targets, gone)
 }
@@ -118,16 +191,22 @@ fn restore_targets<'a>(now: &'a [Device], recorded: &[Device]) -> (Vec<&'a str>,
 /// exists but cannot be enabled still fails the restore, so the record and the guard stay for the
 /// next attempt.
 pub fn restore(devices: &[Device]) -> Result<(), String> {
-    if devices.is_empty() { return Ok(()); }
+    if devices.is_empty() {
+        return Ok(());
+    }
     let (found, incomplete) = enumerate()?;
     let now: Vec<Device> = found.into_iter().map(|(d, _)| d).collect();
     let (targets, gone) = restore_targets(&now, devices);
     // Counts only: device names and sysNames are not logged (AGENTS.md).
-    if gone > 0 { log::warn!("Privacy restore: {gone} recorded device(s) are gone; skipping"); }
+    if gone > 0 {
+        log::warn!("Privacy restore: {gone} recorded device(s) are gone; skipping");
+    }
     // Re-enable the readable devices first: one unreadable device must not keep every other one
     // off. The error afterwards keeps the record and the guard for another attempt.
     set_sys(targets.into_iter(), true)?;
-    if incomplete { return Err("input device properties could not be read; retrying later".into()); }
+    if incomplete {
+        return Err("input device properties could not be read; retrying later".into());
+    }
     Ok(())
 }
 
@@ -136,12 +215,18 @@ mod tests {
     use super::*;
 
     fn named(sys: &str, name: &str, product: u32, vendor: u32) -> Device {
-        Device::Named { sys: sys.into(), name: name.into(), product, vendor }
+        Device::Named {
+            sys: sys.into(),
+            name: name.into(),
+            product,
+            vendor,
+        }
     }
 
     #[test]
     fn parses_numbered_variants() {
-        let text = "({'name': <'Logitech G304'>, 'product': <uint32 16500>, 'vendor': <uint32 1133>},)";
+        let text =
+            "({'name': <'Logitech G304'>, 'product': <uint32 16500>, 'vendor': <uint32 1133>},)";
         assert_eq!(number(text, "product"), Some(16500));
         assert_eq!(number(text, "vendor"), Some(1133));
         assert_eq!(number(text, "missing"), None);
@@ -151,7 +236,10 @@ mod tests {
     fn reads_legacy_and_named_records() {
         let legacy: Vec<Device> = serde_json::from_str(r#"["event5","event6"]"#).unwrap();
         assert!(matches!(&legacy[0], Device::Legacy(sys) if sys == "event5"));
-        let named: Device = serde_json::from_str(r#"{"sys":"event12","name":"Logitech G304","product":16500,"vendor":1133}"#).unwrap();
+        let named: Device = serde_json::from_str(
+            r#"{"sys":"event12","name":"Logitech G304","product":16500,"vendor":1133}"#,
+        )
+        .unwrap();
         assert_eq!(named.identity(), Some(("Logitech G304", 16500, 1133)));
     }
 
@@ -161,7 +249,10 @@ mod tests {
         let keyboard = named("event3", "AT Translated Set 2 keyboard", 1, 1);
         let recorded = [named("event14", "Logitech G304", 16500, 1133)];
         let now = [keyboard, mouse];
-        assert_eq!(super::restore_targets(&now, &recorded), (vec!["event12"], 0));
+        assert_eq!(
+            super::restore_targets(&now, &recorded),
+            (vec!["event12"], 0)
+        );
     }
 
     #[test]
@@ -170,8 +261,14 @@ mod tests {
         let second = named("event15", "Logitech G304", 16500, 1133);
         let now = [first, second];
         // Two record entries for one identity, as a receiver exposing several event nodes produces.
-        let recorded = [named("event14", "Logitech G304", 16500, 1133), named("event16", "Logitech G304", 16500, 1133)];
-        assert_eq!(super::restore_targets(&now, &recorded), (vec!["event12", "event15"], 0));
+        let recorded = [
+            named("event14", "Logitech G304", 16500, 1133),
+            named("event16", "Logitech G304", 16500, 1133),
+        ];
+        assert_eq!(
+            super::restore_targets(&now, &recorded),
+            (vec!["event12", "event15"], 0)
+        );
     }
 
     #[test]

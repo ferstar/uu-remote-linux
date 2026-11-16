@@ -3,7 +3,9 @@
 use std::sync::Arc;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct PortalError { pub code: i32 }
+pub struct PortalError {
+    pub code: i32,
+}
 
 impl std::fmt::Display for PortalError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -28,14 +30,24 @@ pub struct DmaFrame {
     pub size: u32,
     pub modifier: u64,
 }
-pub enum DmaCapture<T> { Frame(T), Pending, Cpu, Blank, Unavailable(i32) }
+pub enum DmaCapture<T> {
+    Frame(T),
+    Pending,
+    Cpu,
+    Blank,
+    Unavailable(i32),
+}
 #[cfg(unix)]
 #[path = "portal_permissions.rs"]
 mod permissions;
 
 #[cfg(all(target_os = "linux", feature = "portal"))]
 mod native {
-    use std::{ffi::c_void, ptr::NonNull, sync::{Arc, Mutex, MutexGuard, TryLockError}};
+    use std::{
+        ffi::c_void,
+        ptr::NonNull,
+        sync::{Arc, Mutex, MutexGuard, TryLockError},
+    };
     crate::engine_ffi! { crate::engine_plugin::Engine::Portal;
         fn uu_portal_open_persist(restore: *const libc::c_char, save: extern "C" fn(*const libc::c_char, *mut c_void), data: *mut c_void, error: *mut i32, width: *mut u32, height: *mut u32) -> *mut c_void;
         fn uu_portal_open_virtual(restore: *const libc::c_char, save: extern "C" fn(*const libc::c_char, *mut c_void), data: *mut c_void, error: *mut i32, width: *mut u32, height: *mut u32) -> *mut c_void;
@@ -72,26 +84,45 @@ mod native {
         fn uu_portal_end(portal: *mut c_void);
     }
     struct Handle(NonNull<c_void>);
-    fn pack(width: u32, height: u32) -> u64 { (u64::from(width) << 32) | u64::from(height) }
+    fn pack(width: u32, height: u32) -> u64 {
+        (u64::from(width) << 32) | u64::from(height)
+    }
     // Calls are serialized by Session's mutex except wait_frame, whose C-side
     // condition wait synchronizes with callbacks and input through the engine lock.
     unsafe impl Send for Handle {}
     unsafe impl Sync for Handle {}
-    impl Drop for Handle { fn drop(&mut self) { unsafe { uu_portal_close(self.0.as_ptr()) } } }
+    impl Drop for Handle {
+        fn drop(&mut self) {
+            unsafe { uu_portal_close(self.0.as_ptr()) }
+        }
+    }
     fn lease_handle<T>(current: &Mutex<Arc<T>>) -> Result<Arc<T>, String> {
-        current.lock().map(|handle| Arc::clone(&handle)).map_err(|_| "Portal session lock poisoned".into())
+        current
+            .lock()
+            .map(|handle| Arc::clone(&handle))
+            .map_err(|_| "Portal session lock poisoned".into())
     }
     fn blank_changed(frame: &mut [u8], version: &mut Option<super::FrameVersion>) -> bool {
-        if *version == Some(super::FrameVersion(0, 0)) { return false; }
-        super::blank(frame); *version = Some(super::FrameVersion(0, 0)); true
+        if *version == Some(super::FrameVersion(0, 0)) {
+            return false;
+        }
+        super::blank(frame);
+        *version = Some(super::FrameVersion(0, 0));
+        true
     }
     // Portal preparation and native teardown can wait for consent or D-Bus.
     // Only the swap may hold the mutex shared with input and clipboard.
     // Only the unit tests swap a test handle now; production swaps carry the clipboard.
     #[cfg(test)]
-    fn replace_handle<T>(current: &Mutex<T>, locked: MutexGuard<'_, T>, prepare: impl FnOnce() -> Result<Option<T>, String>) -> Result<bool, String> {
+    fn replace_handle<T>(
+        current: &Mutex<T>,
+        locked: MutexGuard<'_, T>,
+        prepare: impl FnOnce() -> Result<Option<T>, String>,
+    ) -> Result<bool, String> {
         drop(locked);
-        let Some(replacement) = prepare()? else { return Ok(false); };
+        let Some(replacement) = prepare()? else {
+            return Ok(false);
+        };
         let old = {
             let mut handle = current.lock().map_err(|_| "Portal session lock poisoned")?;
             std::mem::replace(&mut *handle, replacement)
@@ -101,10 +132,19 @@ mod native {
     }
     /// Like `replace_handle`, but carries the viewer's clipboard text before the old session
     /// closes. Clipboard writers wait from before the swap until the carry-over finishes.
-    fn replace_handle_carrying(current: &Mutex<Arc<Handle>>, clipboard_write: &Mutex<()>, locked: MutexGuard<'_, Arc<Handle>>, prepare: impl FnOnce() -> Result<Option<Arc<Handle>>, String>) -> Result<bool, String> {
+    fn replace_handle_carrying(
+        current: &Mutex<Arc<Handle>>,
+        clipboard_write: &Mutex<()>,
+        locked: MutexGuard<'_, Arc<Handle>>,
+        prepare: impl FnOnce() -> Result<Option<Arc<Handle>>, String>,
+    ) -> Result<bool, String> {
         drop(locked);
-        let Some(replacement) = prepare()? else { return Ok(false); };
-        let _clipboard = clipboard_write.lock().map_err(|_| "Portal clipboard lock poisoned")?;
+        let Some(replacement) = prepare()? else {
+            return Ok(false);
+        };
+        let _clipboard = clipboard_write
+            .lock()
+            .map_err(|_| "Portal clipboard lock poisoned")?;
         let _serial = crate::input::lock_portal_held();
         let (old, installed) = {
             let mut handle = current.lock().map_err(|_| "Portal session lock poisoned")?;
@@ -118,7 +158,11 @@ mod native {
         Ok(true)
     }
     #[derive(Default)]
-    struct Recovery { retry_at: Option<std::time::Instant>, failed_until: Option<std::time::Instant>, denied: bool }
+    struct Recovery {
+        retry_at: Option<std::time::Instant>,
+        failed_until: Option<std::time::Instant>,
+        denied: bool,
+    }
     impl Recovery {
         // Shared by the encoder's stream-loss recovery and the desktop supervisor: a failed open
         // backs both off, and a terminal consent/format failure stops the encoder from prompting again.
@@ -126,23 +170,46 @@ mod native {
             let until = now + std::time::Duration::from_secs(5);
             self.failed_until = Some(until);
             self.retry_at = Some(until);
-            if matches!(code, 4 | 5 | 6 | 8 | 14) { self.denied = true; }
+            if matches!(code, 4 | 5 | 6 | 8 | 14) {
+                self.denied = true;
+            }
         }
-        fn succeeded(&mut self) { *self = Self::default(); }
+        fn succeeded(&mut self) {
+            *self = Self::default();
+        }
         fn ready(&mut self, now: std::time::Instant, unlocked: impl FnOnce() -> bool) -> bool {
-            if self.denied { return false; }
-            let deadline = self.retry_at.get_or_insert(now + std::time::Duration::from_secs(1));
-            if now < *deadline { return false; }
+            if self.denied {
+                return false;
+            }
+            let deadline = self
+                .retry_at
+                .get_or_insert(now + std::time::Duration::from_secs(1));
+            if now < *deadline {
+                return false;
+            }
             *deadline = now + std::time::Duration::from_secs(1);
             unlocked()
         }
     }
-    fn clear_pause_for_unlocked_replacement(was_locked: &std::sync::atomic::AtomicBool, state: Option<bool>) {
+    fn clear_pause_for_unlocked_replacement(
+        was_locked: &std::sync::atomic::AtomicBool,
+        state: Option<bool>,
+    ) {
         if state == Some(false) {
             was_locked.store(false, std::sync::atomic::Ordering::Release);
         }
     }
-    pub struct Session { handle: Mutex<Arc<Handle>>, locked: tokio::sync::watch::Receiver<Option<bool>>, was_locked: std::sync::atomic::AtomicBool, recovery: Mutex<Recovery>, size: std::sync::atomic::AtomicU64, monitor: Mutex<Option<String>>, virtual_output: std::sync::atomic::AtomicBool, clipboard_write: Mutex<()>, end_generation: Arc<std::sync::atomic::AtomicU64> }
+    pub struct Session {
+        handle: Mutex<Arc<Handle>>,
+        locked: tokio::sync::watch::Receiver<Option<bool>>,
+        was_locked: std::sync::atomic::AtomicBool,
+        recovery: Mutex<Recovery>,
+        size: std::sync::atomic::AtomicU64,
+        monitor: Mutex<Option<String>>,
+        virtual_output: std::sync::atomic::AtomicBool,
+        clipboard_write: Mutex<()>,
+        end_generation: Arc<std::sync::atomic::AtomicU64>,
+    }
     impl Session {
         fn take_lock_observation(&self) -> Result<bool, String> {
             // A recovery in progress must see the lock even if another capture
@@ -150,9 +217,13 @@ mod native {
             let _recovery = match self.recovery.try_lock() {
                 Ok(recovery) => recovery,
                 Err(TryLockError::WouldBlock) => return Ok(false),
-                Err(TryLockError::Poisoned(_)) => return Err("Portal recovery lock poisoned".into()),
+                Err(TryLockError::Poisoned(_)) => {
+                    return Err("Portal recovery lock poisoned".into())
+                }
             };
-            Ok(self.was_locked.swap(false, std::sync::atomic::Ordering::AcqRel))
+            Ok(self
+                .was_locked
+                .swap(false, std::sync::atomic::Ordering::AcqRel))
         }
         fn check_geometry(&self, replacement: &Self) -> Result<(), super::PortalError> {
             // Encoder buffers use frame pixels. Logical geometry and EIS regions
@@ -165,24 +236,48 @@ mod native {
         }
         /// Swap `replacement` in, carrying the viewer's clipboard text before the old session
         /// closes. `expected` rejects a desktop end that raced the open.
-        fn install_replacement(&self, replacement: Self, expected: Option<u64>, defer_held: bool, refresh_privacy: bool) -> Result<(u32, u32), String> {
+        fn install_replacement(
+            &self,
+            replacement: Self,
+            expected: Option<u64>,
+            defer_held: bool,
+            refresh_privacy: bool,
+        ) -> Result<(u32, u32), String> {
             let size = replacement.size();
-            let next = replacement.handle.into_inner().map_err(|_| "Portal session lock poisoned".to_string())?;
-            let clipboard = self.clipboard_write.lock().map_err(|_| "Portal clipboard lock poisoned".to_string())?;
+            let next = replacement
+                .handle
+                .into_inner()
+                .map_err(|_| "Portal session lock poisoned".to_string())?;
+            let clipboard = self
+                .clipboard_write
+                .lock()
+                .map_err(|_| "Portal clipboard lock poisoned".to_string())?;
             // Records made against the new handle must postdate the reset below.
             let serial = crate::input::lock_portal_held();
             // Checked under the serial lock: an input recorded after an earlier check would
             // otherwise be destroyed with the session it was sent to.
-            if defer_held && crate::input::portal_input_held() { return Err("input held during the swap".into()); }
-            let mut handle = self.handle.lock().map_err(|_| "Portal session lock poisoned".to_string())?;
-            if expected.is_some_and(|generation| self.end_generation.load(std::sync::atomic::Ordering::Acquire) != generation) {
+            if defer_held && crate::input::portal_input_held() {
+                return Err("input held during the swap".into());
+            }
+            let mut handle = self
+                .handle
+                .lock()
+                .map_err(|_| "Portal session lock poisoned".to_string())?;
+            if expected.is_some_and(|generation| {
+                self.end_generation
+                    .load(std::sync::atomic::Ordering::Acquire)
+                    != generation
+            }) {
                 return Err("desktop session ended during the rebuild".into());
             }
-            self.size.store(pack(size.0, size.1), std::sync::atomic::Ordering::Release);
+            self.size
+                .store(pack(size.0, size.1), std::sync::atomic::Ordering::Release);
             let previous_handle = std::mem::replace(&mut *handle, next);
             let installed = Arc::clone(&*handle);
             drop(handle);
-            if unsafe { uu_portal_clipboard_copy(previous_handle.0.as_ptr(), installed.0.as_ptr()) } < 0 {
+            if unsafe { uu_portal_clipboard_copy(previous_handle.0.as_ptr(), installed.0.as_ptr()) }
+                < 0
+            {
                 log::warn!("Portal clipboard ownership could not be carried over");
             }
             drop(clipboard);
@@ -191,24 +286,47 @@ mod native {
             crate::input::portal_session_replaced();
             drop(serial);
             // A replaced virtual output can move in the layout; absolute input needs its new share.
-            if refresh_privacy { crate::privacy_screen::refresh_pointer_region(); }
+            if refresh_privacy {
+                crate::privacy_screen::refresh_pointer_region();
+            }
             Ok(size)
         }
         /// Point the host and the engine at the cursor mode the installed session really has.
         fn restore_installed_cursor_mode(&self, fallback: bool) {
-            let installed = self.handle.lock().ok().map(|handle| unsafe { uu_portal_cursor_mode(handle.0.as_ptr()) }).unwrap_or(0);
-            let embedded = if installed > 0 { installed == 2 } else { fallback };
-            unsafe { uu_portal_set_cursor_mode(if embedded { 2 } else { 1 }); }
-            super::CURSOR_MODE.store(if embedded { 2 } else { 1 }, std::sync::atomic::Ordering::Release);
+            let installed = self
+                .handle
+                .lock()
+                .ok()
+                .map(|handle| unsafe { uu_portal_cursor_mode(handle.0.as_ptr()) })
+                .unwrap_or(0);
+            let embedded = if installed > 0 {
+                installed == 2
+            } else {
+                fallback
+            };
+            unsafe {
+                uu_portal_set_cursor_mode(if embedded { 2 } else { 1 });
+            }
+            super::CURSOR_MODE.store(
+                if embedded { 2 } else { 1 },
+                std::sync::atomic::Ordering::Release,
+            );
         }
         pub fn is_alive(&self) -> bool {
-            self.handle.lock().is_ok_and(|handle| unsafe { uu_portal_alive(handle.0.as_ptr()) != 0 })
+            self.handle
+                .lock()
+                .is_ok_and(|handle| unsafe { uu_portal_alive(handle.0.as_ptr()) != 0 })
         }
         /// Opens a session for `monitor` (a Mutter connector) with that monitor's saved consent;
         /// None means the screen currently selected, or the only monitor.
         /// `fresh` asks the host again instead of restoring the saved consent (which stays saved).
         /// `virtual_output` shares a KWin virtual output instead (privacy screen) with its own consent.
-        fn open_inner(cancelled: Option<&std::sync::atomic::AtomicBool>, monitor: Option<&str>, fresh: bool, virtual_output: bool) -> Result<Self, super::PortalError> {
+        fn open_inner(
+            cancelled: Option<&std::sync::atomic::AtomicBool>,
+            monitor: Option<&str>,
+            fresh: bool,
+            virtual_output: bool,
+        ) -> Result<Self, super::PortalError> {
             extern "C" fn is_cancelled(data: *mut c_void) -> i32 {
                 let cancelled = unsafe { &*(data as *const std::sync::atomic::AtomicBool) };
                 i32::from(cancelled.load(std::sync::atomic::Ordering::Acquire))
@@ -217,116 +335,238 @@ mod native {
                 return Err(super::PortalError { code: 13 });
             }
             // engine-plugins: libuu-portal.so (or one of its libraries) may be missing on this host.
-            crate::engine_plugin::load(crate::engine_plugin::Engine::Portal).map_err(|_| super::PortalError { code: 15 })?;
+            crate::engine_plugin::load(crate::engine_plugin::Engine::Portal)
+                .map_err(|_| super::PortalError { code: 15 })?;
             let (mut error, mut width, mut height) = (0, 0, 0);
             let directory = super::permissions::directory();
             let key = super::permissions::desktop_key();
-            let wanted = if virtual_output { None } else { monitor.map(str::to_owned).or_else(crate::wayland::portal_monitor) };
+            let wanted = if virtual_output {
+                None
+            } else {
+                monitor
+                    .map(str::to_owned)
+                    .or_else(crate::wayland::portal_monitor)
+            };
             let wanted_key = wanted.as_deref().map(super::permissions::monitor_key);
             let virtual_key = format!("{key}-virtual");
             // One opener at a time: consent tokens are single-use, and two concurrent openers
             // (privacy virtual-output switch and closure recovery after a quick reconnect) each
             // consumed one and both failed, leaving no saved consent (seen live, KDE).
             static OPENING: Mutex<()> = Mutex::new(());
-            let _opening = OPENING.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            let _opening = OPENING
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             // Each monitor has its own consent; the desktop-wide key is the single-monitor one.
             let taken = directory.as_deref().filter(|_| !fresh).and_then(|dir| {
                 let take = |k: String| super::permissions::take(dir, &k).map(|v| (k, v));
-                if virtual_output { return take(virtual_key.clone()); }
-                wanted_key.as_ref().and_then(|name| take(super::permissions::pending_key(name)).or_else(|| take(name.clone())))
-                    .or_else(|| take(super::permissions::pending_key(key))).or_else(|| take(key.to_owned()))
+                if virtual_output {
+                    return take(virtual_key.clone());
+                }
+                wanted_key
+                    .as_ref()
+                    .and_then(|name| {
+                        take(super::permissions::pending_key(name)).or_else(|| take(name.clone()))
+                    })
+                    .or_else(|| take(super::permissions::pending_key(key)))
+                    .or_else(|| take(key.to_owned()))
             });
-            let token = taken.as_ref().and_then(|(_, value)| std::ffi::CString::new(value.as_str()).ok());
-            let requested_key = if virtual_output { &virtual_key } else { wanted_key.as_deref().unwrap_or(key) };
-            struct TokenCache { rotation: super::permissions::Rotation, virtual_key: Option<String>, fresh: bool }
+            let token = taken
+                .as_ref()
+                .and_then(|(_, value)| std::ffi::CString::new(value.as_str()).ok());
+            let requested_key = if virtual_output {
+                &virtual_key
+            } else {
+                wanted_key.as_deref().unwrap_or(key)
+            };
+            struct TokenCache {
+                rotation: super::permissions::Rotation,
+                virtual_key: Option<String>,
+                fresh: bool,
+            }
             let mut cache = TokenCache {
                 rotation: super::permissions::Rotation::new(directory.clone(), requested_key),
-                virtual_key: virtual_output.then(|| virtual_key.clone()), fresh,
+                virtual_key: virtual_output.then(|| virtual_key.clone()),
+                fresh,
             };
-            extern "C" fn save_detailed(token: *const libc::c_char, data: *mut c_void, has_position: i32, x: i32, y: i32) {
+            extern "C" fn save_detailed(
+                token: *const libc::c_char,
+                data: *mut c_void,
+                has_position: i32,
+                x: i32,
+                y: i32,
+            ) {
                 let result = std::panic::catch_unwind(|| unsafe {
                     let cache = &mut *(data as *mut TokenCache);
                     if let Ok(token) = std::ffi::CStr::from_ptr(token).to_str() {
-                        if cache.fresh { cache.rotation.remember(token); return; }
-                        let granted = cache.virtual_key.clone().or_else(||
-                            (has_position != 0).then(|| crate::wayland::portal_monitor_at(x, y)).flatten()
-                                .map(|name| super::permissions::monitor_key(&name)));
-                        if cache.rotation.record(token, granted.as_deref()).is_err() { log::warn!("Portal permission cache could not be saved"); }
+                        if cache.fresh {
+                            cache.rotation.remember(token);
+                            return;
+                        }
+                        let granted = cache.virtual_key.clone().or_else(|| {
+                            (has_position != 0)
+                                .then(|| crate::wayland::portal_monitor_at(x, y))
+                                .flatten()
+                                .map(|name| super::permissions::monitor_key(&name))
+                        });
+                        if cache.rotation.record(token, granted.as_deref()).is_err() {
+                            log::warn!("Portal permission cache could not be saved");
+                        }
                     }
                 });
-                if result.is_err() { log::warn!("Portal permission cache callback failed"); }
+                if result.is_err() {
+                    log::warn!("Portal permission cache callback failed");
+                }
             }
             // Older plugins lack the position-aware entry point; use the pending slot.
             extern "C" fn save_token(token: *const libc::c_char, data: *mut c_void) {
                 save_detailed(token, data, 0, 0, 0);
             }
-            let restore = token.as_ref().map_or(std::ptr::null(), |value| value.as_ptr());
+            let restore = token
+                .as_ref()
+                .map_or(std::ptr::null(), |value| value.as_ptr());
             let failed = |code: i32, cache: &TokenCache| {
-                if let (Some(dir), Some((k, value)), false) = (directory.as_deref(), taken.as_ref(), cache.rotation.received()) {
-                    if super::permissions::save(dir, k, value).is_err() { log::warn!("Portal permission cache could not be restored"); }
+                if let (Some(dir), Some((k, value)), false) = (
+                    directory.as_deref(),
+                    taken.as_ref(),
+                    cache.rotation.received(),
+                ) {
+                    if super::permissions::save(dir, k, value).is_err() {
+                        log::warn!("Portal permission cache could not be restored");
+                    }
                 }
                 super::PortalError { code }
             };
             // Release packages can temporarily have an older libuu-portal.so than the host.
             #[cfg(feature = "engine-plugins")]
-            let detailed = crate::engine_plugin::symbol(crate::engine_plugin::Engine::Portal, "uu_portal_open_detailed\0") != 0;
+            let detailed = crate::engine_plugin::symbol(
+                crate::engine_plugin::Engine::Portal,
+                "uu_portal_open_detailed\0",
+            ) != 0;
             #[cfg(not(feature = "engine-plugins"))]
             let detailed = true;
             #[allow(unused_mut)]
             let mut prefer_dmabuf = false;
             #[cfg(feature = "inproc-av")]
-            if !virtual_output && crate::video::native_engine_eligible(crate::video_select::selection().encoder, crate::video::NativeDisplayKind::Portal)
-                && !std::env::var("UU_PORTAL_DMABUF").is_ok_and(|v| v == "0") {
+            if !virtual_output
+                && crate::video::native_engine_eligible(
+                    crate::video_select::selection().encoder,
+                    crate::video::NativeDisplayKind::Portal,
+                )
+                && !std::env::var("UU_PORTAL_DMABUF").is_ok_and(|v| v == "0")
+            {
                 prefer_dmabuf = true;
             }
             let pointer = if detailed {
                 // Virtual shares can wait for consent too; cancel them like monitor opens.
                 let cancel = cancelled;
                 let callback = cancel.map(|_| is_cancelled as extern "C" fn(*mut c_void) -> i32);
-                let cancel_data = cancel.map_or(std::ptr::null_mut(), |value| value as *const _ as *mut c_void);
-                unsafe { uu_portal_open_detailed(
-                    restore, save_detailed, &mut cache as *mut _ as *mut c_void, callback, cancel_data,
-                    i32::from(prefer_dmabuf), if virtual_output { 4 } else { 1 },
-                    &mut error, &mut width, &mut height,
-                ) }
+                let cancel_data = cancel.map_or(std::ptr::null_mut(), |value| {
+                    value as *const _ as *mut c_void
+                });
+                unsafe {
+                    uu_portal_open_detailed(
+                        restore,
+                        save_detailed,
+                        &mut cache as *mut _ as *mut c_void,
+                        callback,
+                        cancel_data,
+                        i32::from(prefer_dmabuf),
+                        if virtual_output { 4 } else { 1 },
+                        &mut error,
+                        &mut width,
+                        &mut height,
+                    )
+                }
             } else {
                 #[allow(unused_mut)]
                 let mut pointer: *mut c_void = std::ptr::null_mut();
                 #[cfg(feature = "inproc-av")]
                 if prefer_dmabuf {
-                    let callback = cancelled.map(|_| is_cancelled as extern "C" fn(*mut c_void) -> i32);
-                    let cancel_data = cancelled.map_or(std::ptr::null_mut(), |value| value as *const _ as *mut c_void);
-                    pointer = unsafe { uu_portal_open_persist_capture(
-                        restore, save_token, &mut cache as *mut _ as *mut c_void, callback, cancel_data, 1,
-                        &mut error, &mut width, &mut height,
-                    ) };
-                    if pointer.is_null() && error != 0 { return Err(failed(error, &cache)); }
-                    if pointer.is_null() { log::warn!("Portal engine lacks DMA-BUF initialization; falling back to legacy initialization"); }
-                }
-                if !pointer.is_null() { pointer } else { unsafe {
-                    if virtual_output {
-                        uu_portal_open_virtual(restore, save_token, &mut cache as *mut _ as *mut c_void, &mut error, &mut width, &mut height)
-                    } else if let Some(cancelled) = cancelled {
-                        uu_portal_open_persist_cancellable(restore, save_token, &mut cache as *mut _ as *mut c_void,
-                            is_cancelled, cancelled as *const _ as *mut c_void, &mut error, &mut width, &mut height)
-                    } else {
-                        uu_portal_open_persist(restore, save_token, &mut cache as *mut _ as *mut c_void, &mut error, &mut width, &mut height)
+                    let callback =
+                        cancelled.map(|_| is_cancelled as extern "C" fn(*mut c_void) -> i32);
+                    let cancel_data = cancelled.map_or(std::ptr::null_mut(), |value| {
+                        value as *const _ as *mut c_void
+                    });
+                    pointer = unsafe {
+                        uu_portal_open_persist_capture(
+                            restore,
+                            save_token,
+                            &mut cache as *mut _ as *mut c_void,
+                            callback,
+                            cancel_data,
+                            1,
+                            &mut error,
+                            &mut width,
+                            &mut height,
+                        )
+                    };
+                    if pointer.is_null() && error != 0 {
+                        return Err(failed(error, &cache));
                     }
-                } }
+                    if pointer.is_null() {
+                        log::warn!("Portal engine lacks DMA-BUF initialization; falling back to legacy initialization");
+                    }
+                }
+                if !pointer.is_null() {
+                    pointer
+                } else {
+                    unsafe {
+                        if virtual_output {
+                            uu_portal_open_virtual(
+                                restore,
+                                save_token,
+                                &mut cache as *mut _ as *mut c_void,
+                                &mut error,
+                                &mut width,
+                                &mut height,
+                            )
+                        } else if let Some(cancelled) = cancelled {
+                            uu_portal_open_persist_cancellable(
+                                restore,
+                                save_token,
+                                &mut cache as *mut _ as *mut c_void,
+                                is_cancelled,
+                                cancelled as *const _ as *mut c_void,
+                                &mut error,
+                                &mut width,
+                                &mut height,
+                            )
+                        } else {
+                            uu_portal_open_persist(
+                                restore,
+                                save_token,
+                                &mut cache as *mut _ as *mut c_void,
+                                &mut error,
+                                &mut width,
+                                &mut height,
+                            )
+                        }
+                    }
+                }
             };
-            let Some(handle) = NonNull::new(pointer) else { return Err(failed(if error == 0 { 15 } else { error }, &cache)) };
+            let Some(handle) = NonNull::new(pointer) else {
+                return Err(failed(if error == 0 { 15 } else { error }, &cache));
+            };
             let (mut x, mut y) = (0, 0);
-            let granted = (!virtual_output && unsafe { uu_portal_stream_position(handle.as_ptr(), &mut x, &mut y) } == 0)
-                .then(|| crate::wayland::portal_monitor_at(x, y)).flatten();
+            let granted = (!virtual_output
+                && unsafe { uu_portal_stream_position(handle.as_ptr(), &mut x, &mut y) } == 0)
+                .then(|| crate::wayland::portal_monitor_at(x, y))
+                .flatten();
             let saved = match &granted {
                 _ if virtual_output => virtual_key.clone(),
                 Some(name) => super::permissions::monitor_key(name),
                 None => key.to_owned(),
             };
-            if cache.rotation.finish(&saved, fresh || virtual_output || granted.is_some()).is_err() {
+            if cache
+                .rotation
+                .finish(&saved, fresh || virtual_output || granted.is_some())
+                .is_err()
+            {
                 log::warn!("Portal permission cache could not be saved");
             }
-            if wanted.is_some() && granted != wanted { log::warn!("Portal granted a different monitor than requested"); }
+            if wanted.is_some() && granted != wanted {
+                log::warn!("Portal granted a different monitor than requested");
+            }
             // Keep a freshly granted compositor frame regardless of lock state. Discarding it
             // before new damage can leave a static desktop permanently blank (#2).
             let handle = Arc::new(Handle(handle));
@@ -334,9 +574,29 @@ mod native {
             // environment or a runtime switch asked for.
             let available = unsafe { uu_portal_cursor_modes(handle.0.as_ptr()) };
             let applied = unsafe { uu_portal_cursor_mode(handle.0.as_ptr()) };
-            if applied > 0 { super::CURSOR_MODE.store(if applied == 2 { 2 } else { 1 }, std::sync::atomic::Ordering::Release); }
-            if available > 0 { super::CURSOR_EMBED.store(if available & 2 != 0 { 2 } else { 1 }, std::sync::atomic::Ordering::Release); }
-            Ok(Self { handle: Mutex::new(handle), locked: crate::session_lock::watch_locked(), was_locked: std::sync::atomic::AtomicBool::new(false), recovery: Mutex::new(Recovery::default()), size: pack(width, height).into(), monitor: Mutex::new(granted), virtual_output: virtual_output.into(), clipboard_write: Mutex::new(()), end_generation: Arc::new(std::sync::atomic::AtomicU64::new(0)) })
+            if applied > 0 {
+                super::CURSOR_MODE.store(
+                    if applied == 2 { 2 } else { 1 },
+                    std::sync::atomic::Ordering::Release,
+                );
+            }
+            if available > 0 {
+                super::CURSOR_EMBED.store(
+                    if available & 2 != 0 { 2 } else { 1 },
+                    std::sync::atomic::Ordering::Release,
+                );
+            }
+            Ok(Self {
+                handle: Mutex::new(handle),
+                locked: crate::session_lock::watch_locked(),
+                was_locked: std::sync::atomic::AtomicBool::new(false),
+                recovery: Mutex::new(Recovery::default()),
+                size: pack(width, height).into(),
+                monitor: Mutex::new(granted),
+                virtual_output: virtual_output.into(),
+                clipboard_write: Mutex::new(()),
+                end_generation: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            })
         }
         /// Frame pixels of the monitor the stream currently follows.
         pub fn size(&self) -> (u32, u32) {
@@ -348,44 +608,75 @@ mod native {
         pub fn end(&self) {
             // Invalidate an open that is still waiting for consent: it must not install a share
             // after the desktop was ended (viewer disconnect, idle shutdown, capture teardown).
-            self.end_generation.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
-            if let Ok(handle) = self.handle.lock() { unsafe { uu_portal_end(handle.0.as_ptr()) }; }
+            self.end_generation
+                .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+            if let Ok(handle) = self.handle.lock() {
+                unsafe { uu_portal_end(handle.0.as_ptr()) };
+            }
             // The ended session's native devices are gone; forget the inputs bound to them.
             let _serial = crate::input::lock_portal_held();
             crate::input::portal_session_replaced();
         }
         /// Mutter connector of the monitor this session captures, when several are advertised.
-        pub fn monitor(&self) -> Option<String> { self.monitor.lock().ok().and_then(|m| m.clone()) }
+        pub fn monitor(&self) -> Option<String> {
+            self.monitor.lock().ok().and_then(|m| m.clone())
+        }
         /// Capture another monitor: open its own session (silently with saved consent; the first
         /// time GNOME asks on the host) and swap it in, so every holder of this Arc follows.
         pub fn switch_to(&self, connector: &str) -> Result<(), String> {
-            if self.monitor().as_deref() == Some(connector) { return Ok(()); }
+            if self.monitor().as_deref() == Some(connector) {
+                return Ok(());
+            }
             // Both this and the cursor-mode rebuild replace the handle: serialize them so the
             // later open cannot install a stale source over the other.
-            let _recovery = self.recovery.lock().map_err(|_| "Portal recovery lock poisoned")?;
-            let replacement = Self::open_inner(None, Some(connector), false, false).map_err(|error| error.to_string())?;
+            let _recovery = self
+                .recovery
+                .lock()
+                .map_err(|_| "Portal recovery lock poisoned")?;
+            let replacement = Self::open_inner(None, Some(connector), false, false)
+                .map_err(|error| error.to_string())?;
             if replacement.monitor().as_deref() != Some(connector) {
-                return Err("Another monitor was shared; choose this monitor in the host dialog".into());
+                return Err(
+                    "Another monitor was shared; choose this monitor in the host dialog".into(),
+                );
             }
             self.install_replacement(replacement, None, false, false)?;
-            if let Ok(mut monitor) = self.monitor.lock() { *monitor = Some(connector.to_owned()); }
+            if let Ok(mut monitor) = self.monitor.lock() {
+                *monitor = Some(connector.to_owned());
+            }
             Ok(())
         }
-        pub fn is_virtual(&self) -> bool { self.virtual_output.load(std::sync::atomic::Ordering::Acquire) }
+        pub fn is_virtual(&self) -> bool {
+            self.virtual_output
+                .load(std::sync::atomic::Ordering::Acquire)
+        }
         /// Privacy screen: capture and input move to a KWin virtual output (on) or back to the
         /// physical monitor (off). The caller enables physical outputs before switching back.
         pub fn set_virtual(&self, on: bool) -> Result<(), String> {
-            if self.is_virtual() == on { return Ok(()); }
+            if self.is_virtual() == on {
+                return Ok(());
+            }
             // Closure recovery would otherwise see the replaced share end and reopen the wrong source.
-            let _recovery = self.recovery.lock().map_err(|_| "Portal recovery lock poisoned")?;
+            let _recovery = self
+                .recovery
+                .lock()
+                .map_err(|_| "Portal recovery lock poisoned")?;
             let monitor = self.monitor();
             // KDE restores a monitor share against the whole workspace while the virtual output
             // exists (seen live: 3968x1280 = panel + virtual), so end the virtual share first.
-            if !on { self.end(); }
-            let replacement = Self::open_inner(None, monitor.as_deref(), false, on).map_err(|error| error.to_string())?;
+            if !on {
+                self.end();
+            }
+            let replacement = Self::open_inner(None, monitor.as_deref(), false, on)
+                .map_err(|error| error.to_string())?;
             let size = self.install_replacement(replacement, None, false, false)?;
-            self.virtual_output.store(on, std::sync::atomic::Ordering::Release);
-            log::info!("Portal capture source: virtual={on} size={}x{}", size.0, size.1);
+            self.virtual_output
+                .store(on, std::sync::atomic::Ordering::Release);
+            log::info!(
+                "Portal capture source: virtual={on} size={}x{}",
+                size.0,
+                size.1
+            );
             Ok(())
         }
         /// Ask the compositor to draw the pointer into the stream (embedded) or keep it out
@@ -395,23 +686,47 @@ mod native {
         /// next unlocked motion retries.
         pub fn set_cursor_embedded(&self, embedded: bool) -> Result<bool, String> {
             use std::sync::atomic::{AtomicBool, Ordering};
-            if super::cursor_embedded() == embedded { return Ok(false); }
+            if super::cursor_embedded() == embedded {
+                return Ok(false);
+            }
             // Sample before waiting for `recovery`: an end that happens while this worker is
             // queued must invalidate the rebuild below.
             let generation = self.end_generation.load(Ordering::Acquire);
-            if *self.locked.borrow() != Some(false) { return Ok(false); }
+            if *self.locked.borrow() != Some(false) {
+                return Ok(false);
+            }
             // A backend without the embedded cursor mode never applies the request; remember it
             // so motion does not spawn a rebuild every few events.
-            let modes = self.handle.lock().map(|handle| unsafe { uu_portal_cursor_modes(handle.0.as_ptr()) }).unwrap_or(0);
-            if modes > 0 && modes & 2 == 0 { super::CURSOR_EMBED.store(1, Ordering::Release); return Ok(false); }
-            if modes & 2 != 0 { super::CURSOR_EMBED.store(2, Ordering::Release); }
-            let _recovery = self.recovery.lock().map_err(|_| "Portal recovery lock poisoned")?;
-            if super::cursor_embedded() == embedded { return Ok(false); }
-            if *self.locked.borrow() != Some(false) { return Ok(false); }
+            let modes = self
+                .handle
+                .lock()
+                .map(|handle| unsafe { uu_portal_cursor_modes(handle.0.as_ptr()) })
+                .unwrap_or(0);
+            if modes > 0 && modes & 2 == 0 {
+                super::CURSOR_EMBED.store(1, Ordering::Release);
+                return Ok(false);
+            }
+            if modes & 2 != 0 {
+                super::CURSOR_EMBED.store(2, Ordering::Release);
+            }
+            let _recovery = self
+                .recovery
+                .lock()
+                .map_err(|_| "Portal recovery lock poisoned")?;
+            if super::cursor_embedded() == embedded {
+                return Ok(false);
+            }
+            if *self.locked.borrow() != Some(false) {
+                return Ok(false);
+            }
             // The session this rebuild replaces must still be running: a viewer that left or an
             // idle shutdown ends it, and a replacement opened afterwards would share with nobody.
-            if !self.is_alive() { return Ok(false); }
-            if crate::input::portal_input_held() { return Ok(false); }
+            if !self.is_alive() {
+                return Ok(false);
+            }
+            if crate::input::portal_input_held() {
+                return Ok(false);
+            }
             let previous = super::cursor_embedded();
             let virtual_output = self.is_virtual();
             let monitor = self.monitor();
@@ -424,43 +739,70 @@ mod native {
                 let end_generation = self.end_generation.clone();
                 let cancel = cancel.clone();
                 let stop = stop.clone();
-                std::thread::Builder::new().name("portal-cursor-lock".into()).spawn(move || {
-                    while !stop.load(Ordering::Acquire) {
-                        if *locked.borrow() != Some(false) || end_generation.load(Ordering::Acquire) != generation {
-                            cancel.store(true, Ordering::Release);
-                            return;
+                std::thread::Builder::new()
+                    .name("portal-cursor-lock".into())
+                    .spawn(move || {
+                        while !stop.load(Ordering::Acquire) {
+                            if *locked.borrow() != Some(false)
+                                || end_generation.load(Ordering::Acquire) != generation
+                            {
+                                cancel.store(true, Ordering::Release);
+                                return;
+                            }
+                            std::thread::sleep(std::time::Duration::from_millis(50));
                         }
-                        std::thread::sleep(std::time::Duration::from_millis(50));
-                    }
-                }).ok()
+                    })
+                    .ok()
             };
-            unsafe { uu_portal_set_cursor_mode(if embedded { 2 } else { 1 }); }
+            unsafe {
+                uu_portal_set_cursor_mode(if embedded { 2 } else { 1 });
+            }
             let result = (|| -> Result<Option<((u32, u32), i32)>, String> {
-                let replacement = Self::open_inner(Some(&cancel), monitor.as_deref(), false, virtual_output)
-                    .map_err(|error| error.to_string())?;
-                if *self.locked.borrow() != Some(false) { return Err("desktop locked during the rebuild".into()); }
+                let replacement =
+                    Self::open_inner(Some(&cancel), monitor.as_deref(), false, virtual_output)
+                        .map_err(|error| error.to_string())?;
+                if *self.locked.borrow() != Some(false) {
+                    return Err("desktop locked during the rebuild".into());
+                }
                 if self.end_generation.load(Ordering::Acquire) != generation {
                     return Err("desktop session ended during the rebuild".into());
                 }
                 // A source change that finished meanwhile must not be undone by this swap.
-                if self.is_virtual() != virtual_output || (!virtual_output && self.monitor() != monitor) {
+                if self.is_virtual() != virtual_output
+                    || (!virtual_output && self.monitor() != monitor)
+                {
                     return Err("capture source changed during the rebuild".into());
                 }
                 // A restored consent must not silently move the share to another monitor.
                 if !virtual_output && monitor.is_some() && replacement.monitor() != monitor {
-                    return Err("another monitor was shared; choose this monitor in the host dialog".into());
+                    return Err(
+                        "another monitor was shared; choose this monitor in the host dialog".into(),
+                    );
                 }
                 // KDE does not report the connector, so a size change is the signal that the
                 // replacement follows another output.
-                self.check_geometry(&replacement).map_err(|error| error.to_string())?;
+                self.check_geometry(&replacement)
+                    .map_err(|error| error.to_string())?;
                 // A key or button can go down while the open waits for consent.
-                if crate::input::portal_input_held() { return Ok(None); }
-                let size = match self.install_replacement(replacement, Some(generation), true, virtual_output) {
+                if crate::input::portal_input_held() {
+                    return Ok(None);
+                }
+                let size = match self.install_replacement(
+                    replacement,
+                    Some(generation),
+                    true,
+                    virtual_output,
+                ) {
                     Ok(size) => size,
                     Err(error) if error == "input held during the swap" => return Ok(None),
                     Err(error) => return Err(error),
                 };
-                let applied = self.handle.lock().ok().map(|handle| unsafe { uu_portal_cursor_mode(handle.0.as_ptr()) }).unwrap_or(0);
+                let applied = self
+                    .handle
+                    .lock()
+                    .ok()
+                    .map(|handle| unsafe { uu_portal_cursor_mode(handle.0.as_ptr()) })
+                    .unwrap_or(0);
                 Ok(Some((size, applied)))
             })();
             stop.store(true, Ordering::Release);
@@ -468,7 +810,8 @@ mod native {
             match result {
                 Ok(Some(((width, height), applied))) => {
                     let applied_embedded = applied == 2;
-                    super::CURSOR_MODE.store(if applied_embedded { 2 } else { 1 }, Ordering::Release);
+                    super::CURSOR_MODE
+                        .store(if applied_embedded { 2 } else { 1 }, Ordering::Release);
                     if applied_embedded != embedded {
                         // The backend refused the mode (or cannot report support); retrying would
                         // rebuild the session every motion run without changing anything.
@@ -497,7 +840,10 @@ mod native {
             Self::open_inner(None, None, false, false).map_err(|error| error.to_string())
         }
         #[cfg(test)]
-        pub(crate) fn test_lock_watch(&mut self, locked: tokio::sync::watch::Receiver<Option<bool>>) {
+        pub(crate) fn test_lock_watch(
+            &mut self,
+            locked: tokio::sync::watch::Receiver<Option<bool>>,
+        ) {
             self.locked = locked;
         }
         /// A consent saved before touch support restores keyboard and pointer only. Ask the host once
@@ -505,84 +851,144 @@ mod native {
         /// in when it grants the touchscreen for this monitor at this size; until then, and on any
         /// refusal, this session and its saved consent stay as they are. Ok(false): nothing to do.
         pub fn upgrade_touch(&self) -> Result<bool, String> {
-            let available = self.handle.lock().is_ok_and(|handle| unsafe { uu_portal_touch_available(handle.0.as_ptr()) } != 0);
-            if !available || self.touch_supported() { return Ok(false); }
+            let available = self
+                .handle
+                .lock()
+                .is_ok_and(|handle| unsafe { uu_portal_touch_available(handle.0.as_ptr()) } != 0);
+            if !available || self.touch_supported() {
+                return Ok(false);
+            }
             // Serialize with recovery and the cursor-mode rebuild: all replace the handle.
-            let _recovery = self.recovery.lock().map_err(|_| "Portal recovery lock poisoned")?;
+            let _recovery = self
+                .recovery
+                .lock()
+                .map_err(|_| "Portal recovery lock poisoned")?;
             log::info!("Portal touch consent: asking the host again for the touchscreen");
             let monitor = self.monitor();
-            let replacement = Self::open_inner(None, monitor.as_deref(), true, self.is_virtual()).map_err(|error| error.to_string())?;
+            let replacement = Self::open_inner(None, monitor.as_deref(), true, self.is_virtual())
+                .map_err(|error| error.to_string())?;
             // The new consent is saved for whichever monitor was granted, so a later connection uses it.
-            if replacement.monitor() != monitor { return Err("another monitor was shared".into()); }
-            if !replacement.touch_supported() { return Err("the touchscreen was not granted".into()); }
-            self.check_geometry(&replacement).map_err(|error| error.to_string())?;
+            if replacement.monitor() != monitor {
+                return Err("another monitor was shared".into());
+            }
+            if !replacement.touch_supported() {
+                return Err("the touchscreen was not granted".into());
+            }
+            self.check_geometry(&replacement)
+                .map_err(|error| error.to_string())?;
             self.install_replacement(replacement, None, false, self.is_virtual())?;
             Ok(true)
         }
-        pub fn open_cancellable(cancelled: &std::sync::atomic::AtomicBool) -> Result<Self, super::PortalError> {
+        pub fn open_cancellable(
+            cancelled: &std::sync::atomic::AtomicBool,
+        ) -> Result<Self, super::PortalError> {
             Self::open_inner(Some(cancelled), None, false, false)
         }
-        pub fn recover(&self, cancelled: &std::sync::atomic::AtomicBool) -> Result<bool, super::PortalError> {
+        pub fn recover(
+            &self,
+            cancelled: &std::sync::atomic::AtomicBool,
+        ) -> Result<bool, super::PortalError> {
             use std::sync::atomic::Ordering;
-            if cancelled.load(Ordering::Acquire) { return Err(super::PortalError { code: 13 }); }
+            if cancelled.load(Ordering::Acquire) {
+                return Err(super::PortalError { code: 13 });
+            }
             // Serialize with the encoder's stream-loss recovery: two openers would ask for consent twice.
             let mut recovery = loop {
                 match self.recovery.try_lock() {
                     Ok(recovery) => break recovery,
                     Err(TryLockError::WouldBlock) => {
-                        if cancelled.load(Ordering::Acquire) { return Err(super::PortalError { code: 13 }); }
+                        if cancelled.load(Ordering::Acquire) {
+                            return Err(super::PortalError { code: 13 });
+                        }
                         std::thread::sleep(std::time::Duration::from_millis(20));
                     }
                     Err(TryLockError::Poisoned(_)) => return Err(super::PortalError { code: 3 }),
                 }
             };
-            if recovery.failed_until.is_some_and(|until| std::time::Instant::now() < until) {
+            if recovery
+                .failed_until
+                .is_some_and(|until| std::time::Instant::now() < until)
+            {
                 return Err(super::PortalError { code: 3 });
             }
             let alive = {
-                let handle = self.handle.lock().map_err(|_| super::PortalError { code: 3 })?;
-                unsafe { uu_portal_alive(handle.0.as_ptr()) != 0 && uu_portal_capture_alive(handle.0.as_ptr()) != 0 }
+                let handle = self
+                    .handle
+                    .lock()
+                    .map_err(|_| super::PortalError { code: 3 })?;
+                unsafe {
+                    uu_portal_alive(handle.0.as_ptr()) != 0
+                        && uu_portal_capture_alive(handle.0.as_ptr()) != 0
+                }
             };
-            if alive { return Ok(false); }
+            if alive {
+                return Ok(false);
+            }
 
             // The privacy screen's virtual share is reopened as itself, not as the monitor.
             let virtual_output = self.is_virtual();
             let monitor = self.monitor();
-            let result = super::open_then_install(cancelled, || Self::open_inner(Some(cancelled), monitor.as_deref(), false, virtual_output), |replacement| {
-                self.check_geometry(&replacement)?;
-                let replacement_handle = replacement.handle.into_inner().map_err(|_| super::PortalError { code: 3 })?;
-                let clipboard = self.clipboard_write.lock().map_err(|_| super::PortalError { code: 3 })?;
-                let serial = crate::input::lock_portal_held();
-                let mut handle = self.handle.lock().map_err(|_| super::PortalError { code: 3 })?;
-                if cancelled.load(Ordering::Acquire) { return Err(super::PortalError { code: 13 }); }
-                let previous_handle = std::mem::replace(&mut *handle, replacement_handle);
-                let installed = Arc::clone(&*handle);
-                drop(handle);
-                unsafe { uu_portal_clipboard_copy(previous_handle.0.as_ptr(), installed.0.as_ptr()) };
-                drop(clipboard);
-                drop(previous_handle);
-                // The replaced devices took any held portal input with them.
-                crate::input::portal_session_replaced();
-                drop(serial);
-                clear_pause_for_unlocked_replacement(&self.was_locked, *self.locked.borrow());
-                log::info!("Portal capture session restored after closure");
-                Ok(())
-            });
+            let result = super::open_then_install(
+                cancelled,
+                || Self::open_inner(Some(cancelled), monitor.as_deref(), false, virtual_output),
+                |replacement| {
+                    self.check_geometry(&replacement)?;
+                    let replacement_handle = replacement
+                        .handle
+                        .into_inner()
+                        .map_err(|_| super::PortalError { code: 3 })?;
+                    let clipboard = self
+                        .clipboard_write
+                        .lock()
+                        .map_err(|_| super::PortalError { code: 3 })?;
+                    let serial = crate::input::lock_portal_held();
+                    let mut handle = self
+                        .handle
+                        .lock()
+                        .map_err(|_| super::PortalError { code: 3 })?;
+                    if cancelled.load(Ordering::Acquire) {
+                        return Err(super::PortalError { code: 13 });
+                    }
+                    let previous_handle = std::mem::replace(&mut *handle, replacement_handle);
+                    let installed = Arc::clone(&*handle);
+                    drop(handle);
+                    unsafe {
+                        uu_portal_clipboard_copy(previous_handle.0.as_ptr(), installed.0.as_ptr())
+                    };
+                    drop(clipboard);
+                    drop(previous_handle);
+                    // The replaced devices took any held portal input with them.
+                    crate::input::portal_session_replaced();
+                    drop(serial);
+                    clear_pause_for_unlocked_replacement(&self.was_locked, *self.locked.borrow());
+                    log::info!("Portal capture session restored after closure");
+                    Ok(())
+                },
+            );
             match result {
-                Ok(()) => { recovery.succeeded(); Ok(true) }
+                Ok(()) => {
+                    recovery.succeeded();
+                    Ok(true)
+                }
                 Err(error) => {
-                    if error.code != 13 { recovery.failed(std::time::Instant::now(), error.code); }
+                    if error.code != 13 {
+                        recovery.failed(std::time::Instant::now(), error.code);
+                    }
                     Err(error)
                 }
             }
         }
         pub fn pause(&self) {
             if let Ok(handle) = self.handle.lock() {
-                if unsafe { uu_portal_capture_alive(handle.0.as_ptr()) } != 0 { return; }
+                if unsafe { uu_portal_capture_alive(handle.0.as_ptr()) } != 0 {
+                    return;
+                }
                 unsafe { uu_portal_reset_frame(handle.0.as_ptr()) };
-                self.was_locked.store(true, std::sync::atomic::Ordering::Release);
+                self.was_locked
+                    .store(true, std::sync::atomic::Ordering::Release);
             } else {
-                self.was_locked.store(true, std::sync::atomic::Ordering::Release);
+                self.was_locked
+                    .store(true, std::sync::atomic::Ordering::Release);
             }
         }
         pub fn capture(&self, frame: &mut [u8]) -> Result<(), String> {
@@ -592,17 +998,28 @@ mod native {
                 self.capture_changed(frame, &mut version)?;
                 // A one-shot snapshot must wait for SHM renegotiation after DMA initialization.
                 // Release the handle between attempts so input and recovery remain responsive.
-                if version != Some(super::FrameVersion(0, 0)) || std::time::Instant::now() >= deadline { return Ok(()); }
+                if version != Some(super::FrameVersion(0, 0))
+                    || std::time::Instant::now() >= deadline
+                {
+                    return Ok(());
+                }
                 std::thread::sleep(std::time::Duration::from_millis(10));
             }
         }
         pub fn disable_dmabuf(&self) {
-            if let Ok(handle) = self.handle.lock() { unsafe { uu_portal_dmabuf_disable(handle.0.as_ptr()) }; }
+            if let Ok(handle) = self.handle.lock() {
+                unsafe { uu_portal_dmabuf_disable(handle.0.as_ptr()) };
+            }
         }
-        pub fn with_dmabuf<T>(&self, version: &mut Option<super::FrameVersion>,
+        pub fn with_dmabuf<T>(
+            &self,
+            version: &mut Option<super::FrameVersion>,
             encode: impl FnOnce(&super::DmaFrame, bool) -> Result<T, String>,
         ) -> Result<super::DmaCapture<T>, String> {
-            let handle = self.handle.lock().map_err(|_| "Portal session lock poisoned")?;
+            let handle = self
+                .handle
+                .lock()
+                .map_err(|_| "Portal session lock poisoned")?;
             unsafe { uu_portal_input_dispatch(handle.0.as_ptr()) };
             // Hold the handle guard through GPU completion, so monitor swaps cannot invalidate a lease.
             if unsafe { uu_portal_capture_alive(handle.0.as_ptr()) } == 0 {
@@ -611,27 +1028,39 @@ mod native {
             let identity = handle.0.as_ptr() as usize;
             let mut revision = version.filter(|v| v.0 == identity).map_or(0, |v| v.1);
             let mut frame = super::DmaFrame::default();
-            match unsafe { uu_portal_dmabuf_acquire(handle.0.as_ptr(), &mut frame, &mut revision) } {
+            match unsafe { uu_portal_dmabuf_acquire(handle.0.as_ptr(), &mut frame, &mut revision) }
+            {
                 code @ (0 | 12) => {
                     struct Lease(*mut c_void);
                     impl Drop for Lease {
-                        fn drop(&mut self) { unsafe { uu_portal_dmabuf_release(self.0) }; }
+                        fn drop(&mut self) {
+                            unsafe { uu_portal_dmabuf_release(self.0) };
+                        }
                     }
                     let _lease = Lease(handle.0.as_ptr());
                     let encoded = encode(&frame, code == 0)?;
                     *version = Some(super::FrameVersion(identity, revision));
                     Ok(super::DmaCapture::Frame(encoded))
-                },
+                }
                 10 => Ok(super::DmaCapture::Pending),
                 15 => Ok(super::DmaCapture::Blank),
                 code => Ok(super::DmaCapture::Unavailable(code)),
             }
         }
-        pub fn capture_changed(&self, frame: &mut [u8], version: &mut Option<super::FrameVersion>) -> Result<bool, String> {
+        pub fn capture_changed(
+            &self,
+            frame: &mut [u8],
+            version: &mut Option<super::FrameVersion>,
+        ) -> Result<bool, String> {
             let (width, height) = self.size();
             // A buffer sized for the previous monitor belongs to an encoder that a switch is replacing.
-            if frame.len() != width as usize * height as usize * 4 { return Ok(blank_changed(frame, version)); }
-            let handle = self.handle.lock().map_err(|_| "Portal session lock poisoned")?;
+            if frame.len() != width as usize * height as usize * 4 {
+                return Ok(blank_changed(frame, version));
+            }
+            let handle = self
+                .handle
+                .lock()
+                .map_err(|_| "Portal session lock poisoned")?;
             // Drain EIS even on a static desktop so pause/disconnect and sync
             // events are processed without waiting for remote input.
             unsafe { uu_portal_input_dispatch(handle.0.as_ptr()) };
@@ -640,11 +1069,14 @@ mod native {
                 // source is blanked; wait for unlock before reopening a compositor-closed session.
                 if *self.locked.borrow() != Some(false) {
                     unsafe { uu_portal_reset_frame(handle.0.as_ptr()) };
-                    self.was_locked.store(true, std::sync::atomic::Ordering::Release);
+                    self.was_locked
+                        .store(true, std::sync::atomic::Ordering::Release);
                     return Ok(blank_changed(frame, version));
                 }
                 if self.was_locked.load(std::sync::atomic::Ordering::Acquire) {
-                    if self.take_lock_observation()? { unsafe { uu_portal_reset_frame(handle.0.as_ptr()) }; }
+                    if self.take_lock_observation()? {
+                        unsafe { uu_portal_reset_frame(handle.0.as_ptr()) };
+                    }
                     return Ok(blank_changed(frame, version));
                 }
                 // Serialize recovery without making another capture worker hold
@@ -652,11 +1084,16 @@ mod native {
                 let mut recovery = match self.recovery.try_lock() {
                     Ok(retry) => retry,
                     Err(TryLockError::WouldBlock) => return Ok(blank_changed(frame, version)),
-                    Err(TryLockError::Poisoned(_)) => return Err("Portal recovery lock poisoned".into()),
+                    Err(TryLockError::Poisoned(_)) => {
+                        return Err("Portal recovery lock poisoned".into())
+                    }
                 };
                 if replace_handle_carrying(&self.handle, &self.clipboard_write, handle, || {
                     {
-                        let handle = self.handle.lock().map_err(|_| "Portal session lock poisoned")?;
+                        let handle = self
+                            .handle
+                            .lock()
+                            .map_err(|_| "Portal session lock poisoned")?;
                         if unsafe { uu_portal_capture_alive(handle.0.as_ptr()) } != 0 {
                             recovery.retry_at = None;
                             return Ok(None);
@@ -664,11 +1101,21 @@ mod native {
                     }
                     // logind's LockedHint can lag compositor stream closure.
                     if !recovery.ready(std::time::Instant::now(), || {
-                        if crate::session_lock::locked_now() == Some(false) { return true; }
-                        self.was_locked.store(true, std::sync::atomic::Ordering::Release);
+                        if crate::session_lock::locked_now() == Some(false) {
+                            return true;
+                        }
+                        self.was_locked
+                            .store(true, std::sync::atomic::Ordering::Release);
                         false
-                    }) { return Ok(None); }
-                    let replacement = match Self::open_inner(None, self.monitor().as_deref(), false, self.is_virtual()) {
+                    }) {
+                        return Ok(None);
+                    }
+                    let replacement = match Self::open_inner(
+                        None,
+                        self.monitor().as_deref(),
+                        false,
+                        self.is_virtual(),
+                    ) {
                         Ok(value) => value,
                         Err(error) => {
                             log::warn!("Portal capture recovery deferred: {error}");
@@ -677,12 +1124,19 @@ mod native {
                         }
                     };
                     recovery.succeeded();
-                    self.check_geometry(&replacement).map_err(|error| error.to_string())?;
+                    self.check_geometry(&replacement)
+                        .map_err(|error| error.to_string())?;
                     // Consent can outlive the unlocked state checked above.
-                    if *self.locked.borrow() != Some(false) || self.was_locked.load(std::sync::atomic::Ordering::Acquire) {
+                    if *self.locked.borrow() != Some(false)
+                        || self.was_locked.load(std::sync::atomic::Ordering::Acquire)
+                    {
                         return Ok(None);
                     }
-                    replacement.handle.into_inner().map(Some).map_err(|_| "Portal session lock poisoned".into())
+                    replacement
+                        .handle
+                        .into_inner()
+                        .map(Some)
+                        .map_err(|_| "Portal session lock poisoned".into())
                 })? {
                     *version = None;
                     log::info!("Portal capture session restored after stream loss");
@@ -690,25 +1144,40 @@ mod native {
                 // Recheck lock state on the next capture before showing the new session.
                 return Ok(blank_changed(frame, version));
             } else {
-                self.was_locked.store(false, std::sync::atomic::Ordering::Release);
+                self.was_locked
+                    .store(false, std::sync::atomic::Ordering::Release);
                 match self.recovery.try_lock() {
                     Ok(mut recovery) => recovery.retry_at = None,
                     Err(TryLockError::WouldBlock) => (),
-                    Err(TryLockError::Poisoned(_)) => return Err("Portal recovery lock poisoned".into()),
+                    Err(TryLockError::Poisoned(_)) => {
+                        return Err("Portal recovery lock poisoned".into())
+                    }
                 }
             }
             let identity = handle.0.as_ptr() as usize;
             let mut revision = version.filter(|v| v.0 == identity).map_or(0, |v| v.1);
-            let code = unsafe { uu_portal_capture_since(handle.0.as_ptr(), frame.as_mut_ptr(), frame.len(), &mut revision) };
+            let code = unsafe {
+                uu_portal_capture_since(
+                    handle.0.as_ptr(),
+                    frame.as_mut_ptr(),
+                    frame.len(),
+                    &mut revision,
+                )
+            };
             match code {
-                0 | 12 => { *version = Some(super::FrameVersion(identity, revision)); Ok(code == 0) }
+                0 | 12 => {
+                    *version = Some(super::FrameVersion(identity, revision));
+                    Ok(code == 0)
+                }
                 9 | 10 => Ok(blank_changed(frame, version)),
                 _ => Err(super::error(code)),
             }
         }
 
         pub fn clipboard_supported(&self) -> bool {
-            self.handle.lock().is_ok_and(|handle| unsafe { uu_portal_clipboard_supported(handle.0.as_ptr()) != 0 })
+            self.handle.lock().is_ok_and(|handle| unsafe {
+                uu_portal_clipboard_supported(handle.0.as_ptr()) != 0
+            })
         }
         pub fn wait_frame(&self, timeout: std::time::Duration) -> Result<bool, String> {
             let handle = lease_handle(&self.handle)?;
@@ -722,72 +1191,132 @@ mod native {
             }
         }
         pub fn clipboard_ready(&self) -> bool {
-            self.handle.lock().is_ok_and(|handle| unsafe { uu_portal_clipboard_ready(handle.0.as_ptr()) != 0 })
+            self.handle
+                .lock()
+                .is_ok_and(|handle| unsafe { uu_portal_clipboard_ready(handle.0.as_ptr()) != 0 })
         }
         pub fn clipboard_set(&self, text: &str) -> Result<(), String> {
-            if text.len()>crate::clipboard::MAX_TEXT || *self.locked.borrow()!=Some(false) { return Err("Portal clipboard unavailable".into()); }
+            if text.len() > crate::clipboard::MAX_TEXT || *self.locked.borrow() != Some(false) {
+                return Err("Portal clipboard unavailable".into());
+            }
             // Serialize with the cursor-session swap: it carries the old text over before
             // releasing this lock, so a update that arrives during the swap wins afterwards.
-            let _write=self.clipboard_write.lock().map_err(|_| "Portal clipboard lock poisoned")?;
-            let handle=self.handle.lock().map_err(|_| "Portal session lock poisoned")?;
-            if unsafe { uu_portal_clipboard_set(handle.0.as_ptr(),text.as_ptr(),text.len()) }==0 {Ok(())} else {Err("Portal clipboard ownership failed".into())}
+            let _write = self
+                .clipboard_write
+                .lock()
+                .map_err(|_| "Portal clipboard lock poisoned")?;
+            let handle = self
+                .handle
+                .lock()
+                .map_err(|_| "Portal session lock poisoned")?;
+            if unsafe { uu_portal_clipboard_set(handle.0.as_ptr(), text.as_ptr(), text.len()) } == 0
+            {
+                Ok(())
+            } else {
+                Err("Portal clipboard ownership failed".into())
+            }
         }
         pub fn clipboard_poll(&self) -> Option<String> {
-            if *self.locked.borrow()!=Some(false) { return None; }
-            let handle=self.handle.lock().ok()?;
-            let mut bytes=vec![0;crate::clipboard::MAX_TEXT];
-            let length=unsafe { uu_portal_clipboard_poll(handle.0.as_ptr(),bytes.as_mut_ptr(),bytes.len()) };
-            if length<0 { return None; }
-            bytes.truncate(length as usize); String::from_utf8(bytes).ok()
+            if *self.locked.borrow() != Some(false) {
+                return None;
+            }
+            let handle = self.handle.lock().ok()?;
+            let mut bytes = vec![0; crate::clipboard::MAX_TEXT];
+            let length = unsafe {
+                uu_portal_clipboard_poll(handle.0.as_ptr(), bytes.as_mut_ptr(), bytes.len())
+            };
+            if length < 0 {
+                return None;
+            }
+            bytes.truncate(length as usize);
+            String::from_utf8(bytes).ok()
         }
         pub fn move_pointer(&self, x: f64, y: f64, relative: bool) -> Result<(), String> {
-            if *self.locked.borrow() != Some(false) { return Err("Portal input blocked while locked".into()); }
-            let handle = self.handle.lock().map_err(|_| "Portal session lock poisoned")?;
+            if *self.locked.borrow() != Some(false) {
+                return Err("Portal input blocked while locked".into());
+            }
+            let handle = self
+                .handle
+                .lock()
+                .map_err(|_| "Portal session lock poisoned")?;
             super::check(unsafe { uu_portal_move(handle.0.as_ptr(), x, y, i32::from(relative)) })
         }
         pub fn button(&self, button: i32, pressed: bool) -> Result<(), String> {
-            if pressed && *self.locked.borrow() != Some(false) { return Err("Portal input blocked while locked".into()); }
-            let handle = self.handle.lock().map_err(|_| "Portal session lock poisoned")?;
+            if pressed && *self.locked.borrow() != Some(false) {
+                return Err("Portal input blocked while locked".into());
+            }
+            let handle = self
+                .handle
+                .lock()
+                .map_err(|_| "Portal session lock poisoned")?;
             super::check(unsafe { uu_portal_button(handle.0.as_ptr(), button, i32::from(pressed)) })
         }
         /// Press and release a keysym through Notify*: the compositor picks the key and level of
         /// the active layout. Under EIS (keycodes only) it fails before typing anything.
         pub fn type_keysym(&self, symbol: u32) -> Result<(), String> {
-            if *self.locked.borrow() != Some(false) { return Err("Portal input blocked while locked".into()); }
-            let handle = self.handle.lock().map_err(|_| "Portal session lock poisoned")?;
+            if *self.locked.borrow() != Some(false) {
+                return Err("Portal input blocked while locked".into());
+            }
+            let handle = self
+                .handle
+                .lock()
+                .map_err(|_| "Portal session lock poisoned")?;
             super::check(unsafe { uu_portal_key(handle.0.as_ptr(), symbol, -1, 1) })?;
             super::check(unsafe { uu_portal_key(handle.0.as_ptr(), symbol, -1, 0) })
         }
         /// Smooth scroll in stream pixels (positive scrolls down/right); `finish` ends the gesture.
         pub fn scroll(&self, dx: f64, dy: f64, finish: bool) -> Result<(), String> {
-            if *self.locked.borrow() != Some(false) { return Err("Portal input blocked while locked".into()); }
-            let handle = self.handle.lock().map_err(|_| "Portal session lock poisoned")?;
+            if *self.locked.borrow() != Some(false) {
+                return Err("Portal input blocked while locked".into());
+            }
+            let handle = self
+                .handle
+                .lock()
+                .map_err(|_| "Portal session lock poisoned")?;
             super::check(unsafe { uu_portal_scroll(handle.0.as_ptr(), dx, dy, i32::from(finish)) })
         }
         /// The portal granted the touchscreen device type (requested where available).
         pub fn touch_supported(&self) -> bool {
-            self.handle.lock().is_ok_and(|handle| unsafe { uu_portal_touch_supported(handle.0.as_ptr()) } != 0)
+            self.handle
+                .lock()
+                .is_ok_and(|handle| unsafe { uu_portal_touch_supported(handle.0.as_ptr()) } != 0)
         }
         /// One finger in stream pixels: phase 0 down, 1 motion, 2 up.
         pub fn touch(&self, phase: i32, x: f64, y: f64) -> Result<(), String> {
-            if phase != 2 && *self.locked.borrow() != Some(false) { return Err("Portal input blocked while locked".into()); }
-            let handle = self.handle.lock().map_err(|_| "Portal session lock poisoned")?;
+            if phase != 2 && *self.locked.borrow() != Some(false) {
+                return Err("Portal input blocked while locked".into());
+            }
+            let handle = self
+                .handle
+                .lock()
+                .map_err(|_| "Portal session lock poisoned")?;
             super::check(unsafe { uu_portal_touch(handle.0.as_ptr(), phase, x, y) })
         }
         pub fn key(&self, symbol: u64, pressed: bool) -> Result<(), String> {
-            if pressed && *self.locked.borrow() != Some(false) { return Err("Portal input blocked while locked".into()); }
+            if pressed && *self.locked.borrow() != Some(false) {
+                return Err("Portal input blocked while locked".into());
+            }
             let symbol = u32::try_from(symbol).map_err(|_| "Invalid Portal keysym")?;
-            let handle = self.handle.lock().map_err(|_| "Portal session lock poisoned")?;
+            let handle = self
+                .handle
+                .lock()
+                .map_err(|_| "Portal session lock poisoned")?;
             let keycode = crate::uinput::keysym_to_evdev(u64::from(symbol)).map_or(-1, i32::from);
-            super::check(unsafe { uu_portal_key(handle.0.as_ptr(), symbol, keycode, i32::from(pressed)) })
+            super::check(unsafe {
+                uu_portal_key(handle.0.as_ptr(), symbol, keycode, i32::from(pressed))
+            })
         }
     }
 
     /// Mutter's monitors (GNOME); empty elsewhere.
     pub fn monitors() -> Vec<super::Monitor> {
-        if crate::engine_plugin::load(crate::engine_plugin::Engine::Portal).is_err() { return Vec::new(); }
+        if crate::engine_plugin::load(crate::engine_plugin::Engine::Portal).is_err() {
+            return Vec::new();
+        }
         let mut text = vec![0u8; 8192];
-        if unsafe { uu_portal_monitors(text.as_mut_ptr() as *mut libc::c_char, text.len()) } <= 0 { return Vec::new(); }
+        if unsafe { uu_portal_monitors(text.as_mut_ptr() as *mut libc::c_char, text.len()) } <= 0 {
+            return Vec::new();
+        }
         let end = text.iter().position(|&b| b == 0).unwrap_or(text.len());
         super::parse_monitors(&String::from_utf8_lossy(&text[..end]))
     }
@@ -806,19 +1335,29 @@ mod native {
                     was_locked: std::sync::atomic::AtomicBool::new(false),
                     recovery: Mutex::new(Recovery::default()),
                     size: pack(physical.0, physical.1).into(),
-                    monitor: Mutex::new(None), virtual_output: false.into(),
+                    monitor: Mutex::new(None),
+                    virtual_output: false.into(),
                     clipboard_write: Mutex::new(()),
                     end_generation: Arc::new(std::sync::atomic::AtomicU64::new(0)),
                 }))
             }
 
-            fn session(&self) -> &Session { &self.0 }
+            fn session(&self) -> &Session {
+                &self.0
+            }
         }
         impl Drop for Fixture {
             fn drop(&mut self) {
-                let Session { handle, locked, was_locked, recovery, .. } =
-                    unsafe { ManuallyDrop::take(&mut self.0) };
-                let handle = handle.into_inner().unwrap_or_else(std::sync::PoisonError::into_inner);
+                let Session {
+                    handle,
+                    locked,
+                    was_locked,
+                    recovery,
+                    ..
+                } = unsafe { ManuallyDrop::take(&mut self.0) };
+                let handle = handle
+                    .into_inner()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
                 std::mem::forget(handle);
                 drop((locked, was_locked, recovery));
             }
@@ -832,8 +1371,14 @@ mod native {
             let height_changed = Fixture::new((3840, 1440));
 
             assert!(original.session().check_geometry(same.session()).is_ok());
-            assert!(original.session().check_geometry(width_changed.session()).is_err());
-            assert!(original.session().check_geometry(height_changed.session()).is_err());
+            assert!(original
+                .session()
+                .check_geometry(width_changed.session())
+                .is_err());
+            assert!(original
+                .session()
+                .check_geometry(height_changed.session())
+                .is_err());
         }
 
         struct TestHandle {
@@ -844,9 +1389,16 @@ mod native {
         }
         #[test]
         fn frame_wait_lease_keeps_replaced_handle_alive_without_blocking_input() {
-            use std::sync::{atomic::{AtomicBool, Ordering}, mpsc::channel};
+            use std::sync::{
+                atomic::{AtomicBool, Ordering},
+                mpsc::channel,
+            };
             struct Tracked(Arc<AtomicBool>);
-            impl Drop for Tracked { fn drop(&mut self) { self.0.store(true, Ordering::SeqCst); } }
+            impl Drop for Tracked {
+                fn drop(&mut self) {
+                    self.0.store(true, Ordering::SeqCst);
+                }
+            }
             let dropped = Arc::new(AtomicBool::new(false));
             let current = Arc::new(Mutex::new(Arc::new(Tracked(dropped.clone()))));
             let (waiting, ready) = channel();
@@ -856,14 +1408,21 @@ mod native {
                 std::thread::spawn(move || {
                     let lease = lease_handle(&current).unwrap();
                     waiting.send(()).unwrap();
-                    resumed.recv_timeout(std::time::Duration::from_secs(3)).unwrap();
+                    resumed
+                        .recv_timeout(std::time::Duration::from_secs(3))
+                        .unwrap();
                     assert!(!lease.0.load(Ordering::SeqCst));
                 })
             };
-            ready.recv_timeout(std::time::Duration::from_secs(3)).unwrap();
+            ready
+                .recv_timeout(std::time::Duration::from_secs(3))
+                .unwrap();
             let old = {
                 let mut guard = current.try_lock().expect("frame wait must not block input");
-                std::mem::replace(&mut *guard, Arc::new(Tracked(Arc::new(AtomicBool::new(false)))))
+                std::mem::replace(
+                    &mut *guard,
+                    Arc::new(Tracked(Arc::new(AtomicBool::new(false)))),
+                )
             };
             drop(old);
             assert!(!dropped.load(Ordering::SeqCst));
@@ -879,13 +1438,20 @@ mod native {
                 }
             }
         }
-        fn release_input(current: Arc<Mutex<TestHandle>>) -> (std::thread::JoinHandle<()>, std::sync::mpsc::Receiver<(u8, bool, bool)>) {
+        fn release_input(
+            current: Arc<Mutex<TestHandle>>,
+        ) -> (
+            std::thread::JoinHandle<()>,
+            std::sync::mpsc::Receiver<(u8, bool, bool)>,
+        ) {
             let (released, received) = std::sync::mpsc::channel();
             let worker = std::thread::spawn(move || {
                 let mut handle = current.lock().unwrap();
                 handle.key_held = false;
                 handle.button_held = false;
-                released.send((handle.generation, handle.key_held, handle.button_held)).unwrap();
+                released
+                    .send((handle.generation, handle.key_held, handle.button_held))
+                    .unwrap();
             });
             (worker, received)
         }
@@ -899,7 +1465,10 @@ mod native {
             let (closing, closed) = channel();
             let (resume_close, wait_close) = channel();
             let current = Arc::new(Mutex::new(TestHandle {
-                generation: 1, key_held: true, button_held: true, retirement: Some((closing, wait_close)),
+                generation: 1,
+                key_held: true,
+                button_held: true,
+                retirement: Some((closing, wait_close)),
             }));
             let retry = Arc::new(Mutex::new(None::<std::time::Instant>));
             let recovery = {
@@ -912,7 +1481,10 @@ mod native {
                         opening.send(()).unwrap();
                         wait_open.recv_timeout(Duration::from_secs(10)).unwrap();
                         Ok(Some(TestHandle {
-                            generation: 2, key_held: true, button_held: true, retirement: None,
+                            generation: 2,
+                            key_held: true,
+                            button_held: true,
+                            retirement: None,
                         }))
                     })
                 })
@@ -927,7 +1499,9 @@ mod native {
                 let retry = retry.clone();
                 std::thread::spawn(move || {
                     let _handle = current.lock().unwrap();
-                    contended.send(matches!(retry.try_lock(), Err(TryLockError::WouldBlock))).unwrap();
+                    contended
+                        .send(matches!(retry.try_lock(), Err(TryLockError::WouldBlock)))
+                        .unwrap();
                 })
             };
             let contention_result = contention.recv_timeout(timeout);
@@ -955,10 +1529,17 @@ mod native {
                 let handle = current.lock().unwrap();
                 let result = replace_handle(&current, handle, || {
                     assert_eq!(*current.try_lock().unwrap(), 1);
-                    if failure { Err("open failed".into()) } else { Ok(None) }
+                    if failure {
+                        Err("open failed".into())
+                    } else {
+                        Ok(None)
+                    }
                 });
-                if failure { assert_eq!(result.unwrap_err(), "open failed"); }
-                else { assert!(!result.unwrap()); }
+                if failure {
+                    assert_eq!(result.unwrap_err(), "open failed");
+                } else {
+                    assert!(!result.unwrap());
+                }
                 assert_eq!(*current.try_lock().unwrap(), 1);
             }
         }
@@ -974,15 +1555,23 @@ mod native {
             assert!(recovery.denied);
             assert!(!recovery.ready(later, || panic!("denied consent must not be probed again")));
             recovery.succeeded();
-            assert!(!recovery.denied && recovery.failed_until.is_none() && recovery.retry_at.is_none());
+            assert!(
+                !recovery.denied && recovery.failed_until.is_none() && recovery.retry_at.is_none()
+            );
         }
 
         #[test]
         fn recovery_backoff_skips_lock_probes_until_the_deadline() {
-            use std::{cell::Cell, time::{Duration, Instant}};
+            use std::{
+                cell::Cell,
+                time::{Duration, Instant},
+            };
             let now = Instant::now();
             let probes = Cell::new(0);
-            let unlocked = || { probes.set(probes.get() + 1); true };
+            let unlocked = || {
+                probes.set(probes.get() + 1);
+                true
+            };
             let mut recovery = Recovery::default();
             // Initial one-second grace period, polled at up to 144 fps.
             for millis in 0..1000 {
@@ -998,15 +1587,25 @@ mod native {
             }
             assert_eq!(probes.get(), 1);
             // A locked/unknown probe denies opening and is itself throttled.
-            assert!(!recovery.ready(now + Duration::from_secs(6), || { probes.set(2); false }));
-            assert!(!recovery.ready(now + Duration::from_millis(6999), || panic!("early lock probe")));
+            assert!(!recovery.ready(now + Duration::from_secs(6), || {
+                probes.set(2);
+                false
+            }));
+            assert!(
+                !recovery.ready(now + Duration::from_millis(6999), || panic!(
+                    "early lock probe"
+                ))
+            );
             assert!(recovery.ready(now + Duration::from_secs(7), unlocked));
             assert_eq!(probes.get(), 3);
         }
 
         #[test]
         fn lock_observation_survives_unlock_while_recovery_is_opening() {
-            use std::{sync::{atomic::Ordering, mpsc::channel}, time::Duration};
+            use std::{
+                sync::{atomic::Ordering, mpsc::channel},
+                time::Duration,
+            };
             let mut fixture = Fixture::new((2, 2));
             let (locked, watch) = tokio::sync::watch::channel(Some(false));
             fixture.0.locked = watch;
@@ -1039,7 +1638,9 @@ mod native {
                 assert!(still_pending);
             });
             assert!(session.take_lock_observation().unwrap());
-            assert!(!session.was_locked.load(std::sync::atomic::Ordering::Acquire));
+            assert!(!session
+                .was_locked
+                .load(std::sync::atomic::Ordering::Acquire));
         }
 
         #[test]
@@ -1058,7 +1659,11 @@ mod native {
     }
 }
 
-fn blank(frame: &mut [u8]) { for pixel in frame.chunks_exact_mut(4) { pixel.copy_from_slice(&[0, 0, 0, 255]); } }
+fn blank(frame: &mut [u8]) {
+    for pixel in frame.as_chunks_mut::<4>().0 {
+        pixel.copy_from_slice(&[0, 0, 0, 255]);
+    }
+}
 
 fn open_then_install<T>(
     cancelled: &std::sync::atomic::AtomicBool,
@@ -1066,29 +1671,50 @@ fn open_then_install<T>(
     install: impl FnOnce(T) -> Result<(), PortalError>,
 ) -> Result<(), PortalError> {
     use std::sync::atomic::Ordering;
-    if cancelled.load(Ordering::Acquire) { return Err(PortalError { code: 13 }); }
+    if cancelled.load(Ordering::Acquire) {
+        return Err(PortalError { code: 13 });
+    }
     let replacement = open()?;
-    if cancelled.load(Ordering::Acquire) { return Err(PortalError { code: 13 }); }
+    if cancelled.load(Ordering::Acquire) {
+        return Err(PortalError { code: 13 });
+    }
     install(replacement)
 }
 
 fn error(code: i32) -> String {
     let reason = match code {
-        1 => "session bus unavailable", 2 => "RemoteDesktop/ScreenCast portal unavailable",
-        3 => "request failed", 4 => "permission cancelled or denied", 5 => "permission request timed out",
-        6 => "single monitor and keyboard/pointer permission required", 7 => "PipeWire connection failed",
-        8 => "unsupported frame format or size", 9 => "session closed or stream lost",
-        10 => "frame unavailable", 11 => "invalid input or frame buffer",
-        13 => "operation cancelled", 14 => "dimensions changed; reconnect required",
-        15 => return match crate::engine_plugin::load(crate::engine_plugin::Engine::Portal) {
-            Err(reason) if cfg!(feature = "portal") => format!("GNOME/KDE Wayland (portal) engine unavailable: {reason}"),
-            _ => NOT_BUILT.into(),
-        },
+        1 => "session bus unavailable",
+        2 => "RemoteDesktop/ScreenCast portal unavailable",
+        3 => "request failed",
+        4 => "permission cancelled or denied",
+        5 => "permission request timed out",
+        6 => "single monitor and keyboard/pointer permission required",
+        7 => "PipeWire connection failed",
+        8 => "unsupported frame format or size",
+        9 => "session closed or stream lost",
+        10 => "frame unavailable",
+        11 => "invalid input or frame buffer",
+        13 => "operation cancelled",
+        14 => "dimensions changed; reconnect required",
+        15 => {
+            return match crate::engine_plugin::load(crate::engine_plugin::Engine::Portal) {
+                Err(reason) if cfg!(feature = "portal") => {
+                    format!("GNOME/KDE Wayland (portal) engine unavailable: {reason}")
+                }
+                _ => NOT_BUILT.into(),
+            }
+        }
         _ => "operation failed",
     };
     format!("Portal {reason} (code {code})")
 }
-fn check(code: i32) -> Result<(), String> { if code == 0 { Ok(()) } else { Err(error(code)) } }
+fn check(code: i32) -> Result<(), String> {
+    if code == 0 {
+        Ok(())
+    } else {
+        Err(error(code))
+    }
+}
 
 /// GNOME/KDE Wayland selected the portal backend, but this binary was built without it (the release
 /// package is X11 only): say how to get a picture instead of an opaque "portal unavailable".
@@ -1097,72 +1723,165 @@ pub const NOT_BUILT: &str = "this build has no GNOME/KDE Wayland (portal) suppor
 #[cfg(all(target_os = "linux", feature = "portal"))]
 pub use native::Session as PortalSession;
 #[cfg(not(all(target_os = "linux", feature = "portal")))]
-pub struct PortalSession { pub width: u32, pub height: u32 }
-#[cfg(not(all(target_os = "linux", feature = "portal")))]
-impl PortalSession {
-    pub fn size(&self) -> (u32, u32) { (self.width, self.height) }
-    pub fn monitor(&self) -> Option<String> { None }
-    pub fn end(&self) {}
-    pub fn switch_to(&self, _: &str) -> Result<(), String> { Err(error(15)) }
-    pub fn set_virtual(&self, _: bool) -> Result<(), String> { Err(error(15)) }
-    pub fn set_cursor_embedded(&self, _: bool) -> Result<bool, String> { Err(error(15)) }
-    pub fn is_virtual(&self) -> bool { false }
+pub struct PortalSession {
+    pub width: u32,
+    pub height: u32,
 }
 #[cfg(not(all(target_os = "linux", feature = "portal")))]
 impl PortalSession {
-    pub fn clipboard_supported(&self) -> bool { false }
-    pub fn clipboard_ready(&self) -> bool { false }
-    pub fn clipboard_set(&self, _: &str) -> Result<(), String> { Err(error(15)) }
-    pub fn clipboard_poll(&self) -> Option<String> { None }
-    pub fn is_alive(&self) -> bool { false }
-    pub fn open() -> Result<Self, String> { Err("Portal backend requires Linux and --features portal".into()) }
-    pub fn open_cancellable(cancelled: &std::sync::atomic::AtomicBool) -> Result<Self, PortalError> {
-        if cancelled.load(std::sync::atomic::Ordering::Acquire) { Err(PortalError { code: 13 }) }
-        else { Err(PortalError { code: 15 }) }
+    pub fn size(&self) -> (u32, u32) {
+        (self.width, self.height)
+    }
+    pub fn monitor(&self) -> Option<String> {
+        None
+    }
+    pub fn end(&self) {}
+    pub fn switch_to(&self, _: &str) -> Result<(), String> {
+        Err(error(15))
+    }
+    pub fn set_virtual(&self, _: bool) -> Result<(), String> {
+        Err(error(15))
+    }
+    pub fn set_cursor_embedded(&self, _: bool) -> Result<bool, String> {
+        Err(error(15))
+    }
+    pub fn is_virtual(&self) -> bool {
+        false
+    }
+}
+#[cfg(not(all(target_os = "linux", feature = "portal")))]
+impl PortalSession {
+    pub fn clipboard_supported(&self) -> bool {
+        false
+    }
+    pub fn clipboard_ready(&self) -> bool {
+        false
+    }
+    pub fn clipboard_set(&self, _: &str) -> Result<(), String> {
+        Err(error(15))
+    }
+    pub fn clipboard_poll(&self) -> Option<String> {
+        None
+    }
+    pub fn is_alive(&self) -> bool {
+        false
+    }
+    pub fn open() -> Result<Self, String> {
+        Err("Portal backend requires Linux and --features portal".into())
+    }
+    pub fn open_cancellable(
+        cancelled: &std::sync::atomic::AtomicBool,
+    ) -> Result<Self, PortalError> {
+        if cancelled.load(std::sync::atomic::Ordering::Acquire) {
+            Err(PortalError { code: 13 })
+        } else {
+            Err(PortalError { code: 15 })
+        }
     }
     pub fn recover(&self, cancelled: &std::sync::atomic::AtomicBool) -> Result<bool, PortalError> {
-        if cancelled.load(std::sync::atomic::Ordering::Acquire) { Err(PortalError { code: 13 }) }
-        else { Err(PortalError { code: 15 }) }
+        if cancelled.load(std::sync::atomic::Ordering::Acquire) {
+            Err(PortalError { code: 13 })
+        } else {
+            Err(PortalError { code: 15 })
+        }
     }
     pub fn pause(&self) {}
-    pub fn capture(&self, _: &mut [u8]) -> Result<(), String> { Err(error(15)) }
-    pub fn capture_changed(&self, _: &mut [u8], _: &mut Option<FrameVersion>) -> Result<bool, String> { Err(error(15)) }
+    pub fn capture(&self, _: &mut [u8]) -> Result<(), String> {
+        Err(error(15))
+    }
+    pub fn capture_changed(
+        &self,
+        _: &mut [u8],
+        _: &mut Option<FrameVersion>,
+    ) -> Result<bool, String> {
+        Err(error(15))
+    }
     pub fn disable_dmabuf(&self) {}
-    pub fn wait_frame(&self, _: std::time::Duration) -> Result<bool, String> { Err(error(15)) }
-    pub fn with_dmabuf<T>(&self, _: &mut Option<FrameVersion>, _: impl FnOnce(&DmaFrame, bool) -> Result<T, String>) -> Result<DmaCapture<T>, String> {
+    pub fn wait_frame(&self, _: std::time::Duration) -> Result<bool, String> {
+        Err(error(15))
+    }
+    pub fn with_dmabuf<T>(
+        &self,
+        _: &mut Option<FrameVersion>,
+        _: impl FnOnce(&DmaFrame, bool) -> Result<T, String>,
+    ) -> Result<DmaCapture<T>, String> {
         Ok(DmaCapture::Unavailable(-1))
     }
-    pub fn move_pointer(&self, _: f64, _: f64, _: bool) -> Result<(), String> { Err(error(15)) }
-    pub fn button(&self, _: i32, _: bool) -> Result<(), String> { Err(error(15)) }
-    pub fn touch_supported(&self) -> bool { false }
-    pub fn scroll(&self, _: f64, _: f64, _: bool) -> Result<(), String> { Err(error(15)) }
-    pub fn upgrade_touch(&self) -> Result<bool, String> { Err(error(15)) }
-    pub fn type_keysym(&self, _: u32) -> Result<(), String> { Err(error(15)) }
-    pub fn touch(&self, _: i32, _: f64, _: f64) -> Result<(), String> { Err(error(15)) }
-    pub fn key(&self, _: u64, _: bool) -> Result<(), String> { Err(error(15)) }
+    pub fn move_pointer(&self, _: f64, _: f64, _: bool) -> Result<(), String> {
+        Err(error(15))
+    }
+    pub fn button(&self, _: i32, _: bool) -> Result<(), String> {
+        Err(error(15))
+    }
+    pub fn touch_supported(&self) -> bool {
+        false
+    }
+    pub fn scroll(&self, _: f64, _: f64, _: bool) -> Result<(), String> {
+        Err(error(15))
+    }
+    pub fn upgrade_touch(&self) -> Result<bool, String> {
+        Err(error(15))
+    }
+    pub fn type_keysym(&self, _: u32) -> Result<(), String> {
+        Err(error(15))
+    }
+    pub fn touch(&self, _: i32, _: f64, _: f64) -> Result<(), String> {
+        Err(error(15))
+    }
+    pub fn key(&self, _: u64, _: bool) -> Result<(), String> {
+        Err(error(15))
+    }
 }
 
 /// The portal session that monitor switches act on: one per host, reused by reconnects.
-static ACTIVE: std::sync::Mutex<Option<std::sync::Weak<PortalSession>>> = std::sync::Mutex::new(None);
-pub fn permissions_directory() -> Option<std::path::PathBuf> { permissions::directory() }
-pub fn monitor_key(connector: &str) -> String { permissions::monitor_key(connector) }
-pub fn permission_exists(dir: &std::path::Path, key: &str) -> bool { permissions::exists(dir, key) }
+static ACTIVE: std::sync::Mutex<Option<std::sync::Weak<PortalSession>>> =
+    std::sync::Mutex::new(None);
+pub fn permissions_directory() -> Option<std::path::PathBuf> {
+    permissions::directory()
+}
+pub fn monitor_key(connector: &str) -> String {
+    permissions::monitor_key(connector)
+}
+pub fn permission_exists(dir: &std::path::Path, key: &str) -> bool {
+    permissions::exists(dir, key)
+}
 pub fn register(session: &Arc<PortalSession>) {
-    *ACTIVE.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(Arc::downgrade(session));
+    *ACTIVE
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(Arc::downgrade(session));
 }
 /// Whether a desktop capture session is registered for monitor/virtual switching.
 pub fn available() -> bool {
-    ACTIVE.lock().unwrap_or_else(std::sync::PoisonError::into_inner).as_ref().and_then(std::sync::Weak::upgrade).is_some()
+    ACTIVE
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .as_ref()
+        .and_then(std::sync::Weak::upgrade)
+        .is_some()
 }
 /// Privacy screen: see `Session::set_virtual`. Restoring without a live session is a no-op;
 /// failures switching a live session must reach the controller so its recovery record survives.
 pub fn set_virtual_active(on: bool) -> Result<(), String> {
-    let session = ACTIVE.lock().unwrap_or_else(std::sync::PoisonError::into_inner).as_ref().and_then(std::sync::Weak::upgrade);
-    let Some(session) = session else { return if on { Err("Portal desktop unavailable".into()) } else { Ok(()) }; };
+    let session = ACTIVE
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .as_ref()
+        .and_then(std::sync::Weak::upgrade);
+    let Some(session) = session else {
+        return if on {
+            Err("Portal desktop unavailable".into())
+        } else {
+            Ok(())
+        };
+    };
     session.set_virtual(on)
 }
 pub fn switch_active(connector: &str) -> Result<(), String> {
-    let session = ACTIVE.lock().unwrap_or_else(std::sync::PoisonError::into_inner).as_ref().and_then(std::sync::Weak::upgrade)
+    let session = ACTIVE
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .as_ref()
+        .and_then(std::sync::Weak::upgrade)
         .ok_or("Portal desktop unavailable")?;
     session.switch_to(connector)
 }
@@ -1175,7 +1894,8 @@ fn cursor_embedded() -> bool {
     use std::sync::atomic::Ordering;
     match CURSOR_MODE.load(Ordering::Acquire) {
         0 => {
-            let embedded = std::env::var("UU_PORTAL_CURSOR_MODE").is_ok_and(|value| value.eq_ignore_ascii_case("embedded"));
+            let embedded = std::env::var("UU_PORTAL_CURSOR_MODE")
+                .is_ok_and(|value| value.eq_ignore_ascii_case("embedded"));
             CURSOR_MODE.store(if embedded { 2 } else { 1 }, Ordering::Release);
             embedded
         }
@@ -1184,7 +1904,11 @@ fn cursor_embedded() -> bool {
 }
 /// Ask the running session for a stream with (or without) the compositor cursor.
 pub fn set_cursor_embedded(embedded: bool) -> Result<bool, String> {
-    let session = ACTIVE.lock().unwrap_or_else(std::sync::PoisonError::into_inner).as_ref().and_then(std::sync::Weak::upgrade)
+    let session = ACTIVE
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .as_ref()
+        .and_then(std::sync::Weak::upgrade)
         .ok_or("Portal desktop unavailable")?;
     session.set_cursor_embedded(embedded)
 }
@@ -1194,10 +1918,17 @@ fn cursor_switch_available() -> bool {
     #[cfg(all(target_os = "linux", feature = "portal", feature = "engine-plugins"))]
     {
         static AVAILABLE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-        *AVAILABLE.get_or_init(|| crate::engine_plugin::symbol(crate::engine_plugin::Engine::Portal, "uu_portal_set_cursor_mode\0") != 0)
+        *AVAILABLE.get_or_init(|| {
+            crate::engine_plugin::symbol(
+                crate::engine_plugin::Engine::Portal,
+                "uu_portal_set_cursor_mode\0",
+            ) != 0
+        })
     }
     #[cfg(not(all(target_os = "linux", feature = "portal", feature = "engine-plugins")))]
-    { cfg!(all(target_os = "linux", feature = "portal")) }
+    {
+        cfg!(all(target_os = "linux", feature = "portal"))
+    }
 }
 /// Relative motion has no position the viewer could draw a cursor at, so the stream has to carry
 /// one. Absolute motion means the viewer draws its own and an embedded copy would trail it. Both
@@ -1210,26 +1941,40 @@ struct PointerMode {
     blocked_until: Option<std::time::Instant>,
 }
 static POINTER_MODE: std::sync::Mutex<PointerMode> = std::sync::Mutex::new(PointerMode {
-    candidate: None, streak: 0, first: None, switching: false, blocked_until: None,
+    candidate: None,
+    streak: 0,
+    first: None,
+    switching: false,
+    blocked_until: None,
 });
 const POINTER_STREAK: u32 = 5;
 /// A burst at connect must not rebuild the session, so the run has to span time as well.
 const POINTER_WINDOW: std::time::Duration = std::time::Duration::from_millis(200);
 /// After a failed rebuild the consent may be gone; do not retry on the next few events.
 const POINTER_COOLDOWN: std::time::Duration = std::time::Duration::from_secs(5);
-fn pointer_decision(state: &mut PointerMode, current: bool, relative: bool, now: std::time::Instant) -> Option<bool> {
+fn pointer_decision(
+    state: &mut PointerMode,
+    current: bool,
+    relative: bool,
+    now: std::time::Instant,
+) -> Option<bool> {
     if current == relative {
         state.candidate = None;
         state.streak = 0;
         state.first = None;
         return None;
     }
-    if state.switching || state.blocked_until.is_some_and(|until| now < until) { return None; }
+    if state.switching || state.blocked_until.is_some_and(|until| now < until) {
+        return None;
+    }
     match state.candidate {
         Some(candidate) if candidate == relative => {
             state.streak += 1;
             if state.streak >= POINTER_STREAK
-                && state.first.is_some_and(|first| now.duration_since(first) >= POINTER_WINDOW) {
+                && state
+                    .first
+                    .is_some_and(|first| now.duration_since(first) >= POINTER_WINDOW)
+            {
                 return Some(relative);
             }
         }
@@ -1242,14 +1987,27 @@ fn pointer_decision(state: &mut PointerMode, current: bool, relative: bool, now:
     None
 }
 pub fn note_pointer_motion(relative: bool) {
-    if !cursor_switch_available() { return; }
+    if !cursor_switch_available() {
+        return;
+    }
     // The backend does not advertise an embedded cursor: nothing to switch to.
-    if CURSOR_EMBED.load(std::sync::atomic::Ordering::Acquire) == 1 { return; }
+    if CURSOR_EMBED.load(std::sync::atomic::Ordering::Acquire) == 1 {
+        return;
+    }
     // A swap closes the portal input devices; do not drop keys or buttons the viewer holds.
-    if crate::input::portal_input_held() { return; }
+    if crate::input::portal_input_held() {
+        return;
+    }
     let decision = {
-        let Ok(mut state) = POINTER_MODE.lock() else { return; };
-        let decision = pointer_decision(&mut state, cursor_embedded(), relative, std::time::Instant::now());
+        let Ok(mut state) = POINTER_MODE.lock() else {
+            return;
+        };
+        let decision = pointer_decision(
+            &mut state,
+            cursor_embedded(),
+            relative,
+            std::time::Instant::now(),
+        );
         if decision.is_some() {
             state.switching = true;
             state.candidate = None;
@@ -1258,65 +2016,110 @@ pub fn note_pointer_motion(relative: bool) {
         }
         decision
     };
-    let Some(target) = decision else { return; };
-    let spawned = std::thread::Builder::new().name("portal-cursor".into()).spawn(move || {
-        let result = set_cursor_embedded(target);
-        let mut state = POINTER_MODE.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-        state.switching = false;
-        state.candidate = None;
-        state.streak = 0;
-        state.first = None;
-        match result {
-            Ok(true) => {
-                state.blocked_until = None;
-                drop(state);
-                log::info!("Cursor mode follows the pointer: embedded={target}");
+    let Some(target) = decision else {
+        return;
+    };
+    let spawned = std::thread::Builder::new()
+        .name("portal-cursor".into())
+        .spawn(move || {
+            let result = set_cursor_embedded(target);
+            let mut state = POINTER_MODE
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            state.switching = false;
+            state.candidate = None;
+            state.streak = 0;
+            state.first = None;
+            match result {
+                Ok(true) => {
+                    state.blocked_until = None;
+                    drop(state);
+                    log::info!("Cursor mode follows the pointer: embedded={target}");
+                }
+                Ok(false) => {
+                    // Locked, or something else changed the mode first; the next motion retries.
+                    state.blocked_until = None;
+                    drop(state);
+                }
+                Err(error) => {
+                    state.blocked_until = Some(std::time::Instant::now() + POINTER_COOLDOWN);
+                    drop(state);
+                    log::warn!("Portal cursor switch failed: {error}");
+                }
             }
-            Ok(false) => {
-                // Locked, or something else changed the mode first; the next motion retries.
-                state.blocked_until = None;
-                drop(state);
-            }
-            Err(error) => {
-                state.blocked_until = Some(std::time::Instant::now() + POINTER_COOLDOWN);
-                drop(state);
-                log::warn!("Portal cursor switch failed: {error}");
-            }
-        }
-    });
+        });
     if spawned.is_err() {
-        if let Ok(mut state) = POINTER_MODE.lock() { state.switching = false; }
+        if let Ok(mut state) = POINTER_MODE.lock() {
+            state.switching = false;
+        }
     }
 }
-pub struct Monitor { pub connector: String, pub width: u32, pub height: u32, pub x: i32, pub y: i32, pub primary: bool }
+pub struct Monitor {
+    pub connector: String,
+    pub width: u32,
+    pub height: u32,
+    pub x: i32,
+    pub y: i32,
+    pub primary: bool,
+}
 #[cfg(all(target_os = "linux", feature = "portal"))]
 pub use native::monitors;
 #[cfg(not(all(target_os = "linux", feature = "portal")))]
-pub fn monitors() -> Vec<Monitor> { Vec::new() }
+pub fn monitors() -> Vec<Monitor> {
+    Vec::new()
+}
 /// `connector\twidth\theight\tx\ty\tprimary` lines from the engine.
 fn parse_monitors(text: &str) -> Vec<Monitor> {
-    text.lines().filter_map(|line| {
-        let mut f = line.split('\t');
-        let connector = f.next()?.to_owned();
-        let (width, height) = (f.next()?.parse().ok()?, f.next()?.parse().ok()?);
-        let (x, y, primary) = (f.next()?.parse().ok()?, f.next()?.parse().ok()?, f.next()? == "1");
-        (!connector.is_empty() && connector.len() <= 64 && connector.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_'))
-            .then_some(Monitor { connector, width, height, x, y, primary })
-    }).collect()
+    text.lines()
+        .filter_map(|line| {
+            let mut f = line.split('\t');
+            let connector = f.next()?.to_owned();
+            let (width, height) = (f.next()?.parse().ok()?, f.next()?.parse().ok()?);
+            let (x, y, primary) = (
+                f.next()?.parse().ok()?,
+                f.next()?.parse().ok()?,
+                f.next()? == "1",
+            );
+            (!connector.is_empty()
+                && connector.len() <= 64
+                && connector
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_'))
+            .then_some(Monitor {
+                connector,
+                width,
+                height,
+                x,
+                y,
+                primary,
+            })
+        })
+        .collect()
 }
 
 /// Forward frames in-process into encoder stdin. Cancellation drops the Arc;
 /// the caller keeps one owning Arc for all subsequent desktop reconnects.
-pub fn write_frames(session: Arc<PortalSession>, mut output: impl std::io::Write, cancelled: &std::sync::atomic::AtomicBool) -> Result<(), String> {
+pub fn write_frames(
+    session: Arc<PortalSession>,
+    mut output: impl std::io::Write,
+    cancelled: &std::sync::atomic::AtomicBool,
+) -> Result<(), String> {
     let (width, height) = session.size();
-    let length = (width as usize).checked_mul(height as usize).and_then(|n| n.checked_mul(4)).ok_or("Portal frame too large")?;
+    let length = (width as usize)
+        .checked_mul(height as usize)
+        .and_then(|n| n.checked_mul(4))
+        .ok_or("Portal frame too large")?;
     let mut frame = vec![0; length];
     let interval = std::time::Duration::from_nanos(1_000_000_000 / crate::video::FPS);
     while !cancelled.load(std::sync::atomic::Ordering::Acquire) {
         let started = std::time::Instant::now();
         session.capture(&mut frame)?;
-        output.write_all(&frame).map_err(|_| "Portal encoder input closed")?;
-        if let Some(left) = interval.checked_sub(started.elapsed()) { std::thread::sleep(left); }
+        output
+            .write_all(&frame)
+            .map_err(|_| "Portal encoder input closed")?;
+        if let Some(left) = interval.checked_sub(started.elapsed()) {
+            std::thread::sleep(left);
+        }
     }
     Ok(())
 }
@@ -1326,29 +2129,52 @@ mod tests {
     #[test]
     fn privacy_restore_without_a_desktop_is_a_noop_but_enable_fails() {
         assert!(super::set_virtual_active(false).is_ok());
-        assert_eq!(super::set_virtual_active(true).unwrap_err(), "Portal desktop unavailable");
+        assert_eq!(
+            super::set_virtual_active(true).unwrap_err(),
+            "Portal desktop unavailable"
+        );
     }
     #[test]
     fn monitor_lines_parse_and_reject_unsafe_connectors() {
-        let m = super::parse_monitors("eDP-1\t2880\t1800\t0\t0\t1\nHDMI-1\t2560\t1440\t1920\t0\t0\n../x\t1\t1\t0\t0\t0\n");
+        let m = super::parse_monitors(
+            "eDP-1\t2880\t1800\t0\t0\t1\nHDMI-1\t2560\t1440\t1920\t0\t0\n../x\t1\t1\t0\t0\t0\n",
+        );
         assert_eq!(m.len(), 2);
         assert!(m[0].primary && m[0].connector == "eDP-1" && (m[1].width, m[1].x) == (2560, 1920));
     }
     #[test]
-    fn locked_frames_hide_old_content() { let mut frame = [42; 8]; super::blank(&mut frame); assert_eq!(frame, [0,0,0,255,0,0,0,255]); }
+    fn locked_frames_hide_old_content() {
+        let mut frame = [42; 8];
+        super::blank(&mut frame);
+        assert_eq!(frame, [0, 0, 0, 255, 0, 0, 0, 255]);
+    }
     #[test]
     fn errors_never_include_remote_messages_or_identifiers() {
         assert!(super::check(4).unwrap_err().contains("cancelled or denied"));
-        assert!(super::check(9).unwrap_err().contains("closed or stream lost"));
+        assert!(super::check(9)
+            .unwrap_err()
+            .contains("closed or stream lost"));
         // Portal builds name the missing runtime engine; other builds say how to get one.
         let unavailable = super::check(15).unwrap_err();
-        assert!(unavailable.contains("--features wayland,portal") || (cfg!(feature = "portal") && unavailable.contains("engine unavailable")));
+        assert!(
+            unavailable.contains("--features wayland,portal")
+                || (cfg!(feature = "portal") && unavailable.contains("engine unavailable"))
+        );
     }
     #[test]
     fn portal_error_display_is_fixed_and_sanitized() {
-        assert_eq!(super::PortalError { code: 13 }.to_string(), "Portal operation cancelled (code 13)");
-        assert_eq!(super::PortalError { code: 14 }.to_string(), "Portal dimensions changed; reconnect required (code 14)");
-        assert_eq!(super::PortalError { code: 123 }.to_string(), "Portal operation failed (code 123)");
+        assert_eq!(
+            super::PortalError { code: 13 }.to_string(),
+            "Portal operation cancelled (code 13)"
+        );
+        assert_eq!(
+            super::PortalError { code: 14 }.to_string(),
+            "Portal dimensions changed; reconnect required (code 14)"
+        );
+        assert_eq!(
+            super::PortalError { code: 123 }.to_string(),
+            "Portal operation failed (code 123)"
+        );
     }
     #[test]
     fn opening_with_pre_cancelled_flag_returns_cancellation_code() {
@@ -1363,13 +2189,18 @@ mod tests {
     fn replacement_opens_before_installing_under_the_handle_lock() {
         let handle = std::sync::Mutex::new(7);
         let cancelled = std::sync::atomic::AtomicBool::new(false);
-        super::open_then_install(&cancelled, || {
-            assert_eq!(*handle.try_lock().unwrap(), 7);
-            Ok(11)
-        }, |replacement| {
-            *handle.lock().unwrap() = replacement;
-            Ok(())
-        }).unwrap();
+        super::open_then_install(
+            &cancelled,
+            || {
+                assert_eq!(*handle.try_lock().unwrap(), 7);
+                Ok(11)
+            },
+            |replacement| {
+                *handle.lock().unwrap() = replacement;
+                Ok(())
+            },
+        )
+        .unwrap();
         assert_eq!(*handle.lock().unwrap(), 11);
     }
 }
@@ -1380,7 +2211,13 @@ mod pointer_mode_tests {
     use std::time::{Duration, Instant};
 
     fn state() -> PointerMode {
-        PointerMode { candidate: None, streak: 0, first: None, switching: false, blocked_until: None }
+        PointerMode {
+            candidate: None,
+            streak: 0,
+            first: None,
+            switching: false,
+            blocked_until: None,
+        }
     }
 
     #[test]
@@ -1388,7 +2225,10 @@ mod pointer_mode_tests {
         let mut state = state();
         let start = Instant::now();
         for step in 0..20 {
-            assert_eq!(pointer_decision(&mut state, true, false, start + Duration::from_millis(step)), None);
+            assert_eq!(
+                pointer_decision(&mut state, true, false, start + Duration::from_millis(step)),
+                None
+            );
         }
     }
 
@@ -1412,10 +2252,15 @@ mod pointer_mode_tests {
     fn an_opposite_event_restarts_the_run() {
         let mut state = state();
         let start = Instant::now();
-        for step in 0..10 { pointer_decision(&mut state, true, false, start + Duration::from_millis(step)); }
+        for step in 0..10 {
+            pointer_decision(&mut state, true, false, start + Duration::from_millis(step));
+        }
         pointer_decision(&mut state, true, true, start + Duration::from_millis(10));
         for step in 11..19 {
-            assert_eq!(pointer_decision(&mut state, true, false, start + Duration::from_millis(step)), None);
+            assert_eq!(
+                pointer_decision(&mut state, true, false, start + Duration::from_millis(step)),
+                None
+            );
         }
     }
 
@@ -1425,13 +2270,24 @@ mod pointer_mode_tests {
         let start = Instant::now();
         state.blocked_until = Some(start + POINTER_COOLDOWN);
         for step in 0..40 {
-            assert_eq!(pointer_decision(&mut state, true, false, start + Duration::from_millis(step * 10)), None);
+            assert_eq!(
+                pointer_decision(
+                    &mut state,
+                    true,
+                    false,
+                    start + Duration::from_millis(step * 10)
+                ),
+                None
+            );
         }
         let after = start + POINTER_COOLDOWN + Duration::from_millis(1);
         let mut decided = None;
         for step in 0..30 {
             let now = after + Duration::from_millis(step * 10);
-            if let Some(value) = pointer_decision(&mut state, true, false, now) { decided = Some(value); break; }
+            if let Some(value) = pointer_decision(&mut state, true, false, now) {
+                decided = Some(value);
+                break;
+            }
         }
         assert_eq!(decided, Some(false));
     }
@@ -1442,7 +2298,15 @@ mod pointer_mode_tests {
         let start = Instant::now();
         state.switching = true;
         for step in 0..40 {
-            assert_eq!(pointer_decision(&mut state, true, false, start + Duration::from_millis(step * 10)), None);
+            assert_eq!(
+                pointer_decision(
+                    &mut state,
+                    true,
+                    false,
+                    start + Duration::from_millis(step * 10)
+                ),
+                None
+            );
         }
     }
 }

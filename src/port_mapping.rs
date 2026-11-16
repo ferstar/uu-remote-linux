@@ -34,11 +34,17 @@ const WRITE_QUEUE_FRAMES: usize = 256;
 /// Pause reading targets while this much is queued on the data channel.
 const MAX_BUFFERED: usize = 4 * 1024 * 1024;
 
-pub fn enabled() -> bool { std::env::var("UU_PORT_MAPPING").map_or(true, |v| v != "0") }
+pub fn enabled() -> bool {
+    std::env::var("UU_PORT_MAPPING").map_or(true, |v| v != "0")
+}
 
 /// A frame identity field echoed back exactly as received (varint or bytes).
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
-enum Id { Varint(u64), Bytes(Vec<u8>), Missing }
+enum Id {
+    Varint(u64),
+    Bytes(Vec<u8>),
+    Missing,
+}
 
 impl Id {
     fn of(fields: &[WireField], number: u32) -> Self {
@@ -50,43 +56,78 @@ impl Id {
     }
     fn encode(&self, number: u32, out: &mut Vec<u8>) {
         match self {
-            Id::Varint(v) => { varint(u64::from(number) << 3, out); varint(*v, out); }
+            Id::Varint(v) => {
+                varint(u64::from(number) << 3, out);
+                varint(*v, out);
+            }
             Id::Bytes(b) => bytes(number, b, out),
             Id::Missing => {}
         }
     }
 }
 
-fn varint(mut v: u64, out: &mut Vec<u8>) { while v >= 128 { out.push((v as u8 & 127) | 128); v >>= 7; } out.push(v as u8); }
-fn bytes(number: u32, v: &[u8], out: &mut Vec<u8>) { varint(u64::from(number) << 3 | 2, out); varint(v.len() as u64, out); out.extend_from_slice(v); }
+fn varint(mut v: u64, out: &mut Vec<u8>) {
+    while v >= 128 {
+        out.push((v as u8 & 127) | 128);
+        v >>= 7;
+    }
+    out.push(v as u8);
+}
+fn bytes(number: u32, v: &[u8], out: &mut Vec<u8>) {
+    varint(u64::from(number) << 3 | 2, out);
+    varint(v.len() as u64, out);
+    out.extend_from_slice(v);
+}
 
 /// One stream: (session_id, rule_id, stream_id) as sent by the viewer.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
-struct Key { session: Id, rule: Id, stream: Id }
+struct Key {
+    session: Id,
+    rule: Id,
+    stream: Id,
+}
 
 fn frame(key: &Key, kind: u64, payload: &[u8]) -> Vec<u8> {
     let mut out = Vec::new();
     key.session.encode(1, &mut out);
     key.rule.encode(2, &mut out);
     key.stream.encode(3, &mut out);
-    if kind != 0 { varint(4 << 3, &mut out); varint(kind, &mut out); }
-    if !payload.is_empty() { bytes(5, payload, &mut out); }
+    if kind != 0 {
+        varint(4 << 3, &mut out);
+        varint(kind, &mut out);
+    }
+    if !payload.is_empty() {
+        bytes(5, payload, &mut out);
+    }
     out
 }
 
 /// SYN payload; accepts the official snake_case keys and camelCase for robustness.
 fn parse_syn(payload: &[u8]) -> Result<(String, u16), String> {
-    let value: serde_json::Value = serde_json::from_slice(payload).map_err(|_| "invalid SYN payload")?;
-    let host = value.get("target_host").or_else(|| value.get("targetHost")).and_then(|v| v.as_str())
-        .map(str::trim).filter(|h| !h.is_empty()).ok_or("missing target host")?;
-    let port = value.get("target_port").or_else(|| value.get("targetPort")).and_then(|v| v.as_u64())
-        .and_then(|p| u16::try_from(p).ok()).filter(|p| *p != 0).ok_or("invalid target port")?;
+    let value: serde_json::Value =
+        serde_json::from_slice(payload).map_err(|_| "invalid SYN payload")?;
+    let host = value
+        .get("target_host")
+        .or_else(|| value.get("targetHost"))
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|h| !h.is_empty())
+        .ok_or("missing target host")?;
+    let port = value
+        .get("target_port")
+        .or_else(|| value.get("targetPort"))
+        .and_then(|v| v.as_u64())
+        .and_then(|p| u16::try_from(p).ok())
+        .filter(|p| *p != 0)
+        .ok_or("invalid target port")?;
     Ok((host.to_owned(), port))
 }
 
 fn syn_ack(ok: bool, error: Option<&str>) -> Vec<u8> {
     let mut value = serde_json::json!({ "version": PROTOCOL_VERSION, "ok": ok });
-    if let Some(error) = error { value["error"] = serde_json::Value::from(error); }
+    if let Some(error) = error {
+        value["error"] = serde_json::Value::from(error);
+    }
     value.to_string().into_bytes()
 }
 
@@ -98,52 +139,100 @@ pub struct Session {
 
 impl Session {
     /// `channel` is the peer's FILE_DATA_CHANNEL slot (filled once the viewer opens it).
-    pub fn new(channel: Arc<Mutex<Option<Arc<RTCDataChannel>>>>, sequence: Arc<AtomicU64>) -> Arc<Self> {
+    pub fn new(
+        channel: Arc<Mutex<Option<Arc<RTCDataChannel>>>>,
+        sequence: Arc<AtomicU64>,
+    ) -> Arc<Self> {
         let (outbound, mut queue) = mpsc::channel::<(Key, u64, Vec<u8>)>(64);
         tokio::spawn(async move {
             while let Some((key, kind, payload)) = queue.recv().await {
                 let mut slot = channel.lock().unwrap().clone();
                 for _ in 0..100 {
-                    if slot.is_some() { break; }
+                    if slot.is_some() {
+                        break;
+                    }
                     tokio::time::sleep(Duration::from_millis(50)).await;
                     slot = channel.lock().unwrap().clone();
                 }
-                let Some(dc) = slot else { log::warn!("Port mapping frame dropped: no FILE_DATA_CHANNEL"); continue; };
+                let Some(dc) = slot else {
+                    log::warn!("Port mapping frame dropped: no FILE_DATA_CHANNEL");
+                    continue;
+                };
                 while dc.buffered_amount().await > MAX_BUFFERED {
                     tokio::time::sleep(Duration::from_millis(5)).await;
                 }
-                let timestamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs();
-                let message = crate::initialization::envelope(sequence.fetch_add(1, Ordering::Relaxed), timestamp,
-                    MESSAGE_FIELD, &frame(&key, kind, &payload));
+                let timestamp = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs();
+                let message = crate::initialization::envelope(
+                    sequence.fetch_add(1, Ordering::Relaxed),
+                    timestamp,
+                    MESSAGE_FIELD,
+                    &frame(&key, kind, &payload),
+                );
                 if let Err(e) = dc.send(&bytes::Bytes::from(message)).await {
-                    log::warn!("Port mapping send failed: {}", e); break;
+                    log::warn!("Port mapping send failed: {}", e);
+                    break;
                 }
             }
         });
-        Arc::new(Self { outbound, streams: Mutex::new(HashMap::new()) })
+        Arc::new(Self {
+            outbound,
+            streams: Mutex::new(HashMap::new()),
+        })
     }
 
     /// Handles Message field 27 if present; returns true when the message was a port-mapping frame.
     pub fn handle(self: &Arc<Self>, message: &[WireField], channel: &str) -> bool {
-        let Some(WireValue::Bytes(raw)) = message.iter().find(|f| f.number == MESSAGE_FIELD).map(|f| &f.value) else { return false };
+        let Some(WireValue::Bytes(raw)) = message
+            .iter()
+            .find(|f| f.number == MESSAGE_FIELD)
+            .map(|f| &f.value)
+        else {
+            return false;
+        };
         if channel != "FILE_DATA_CHANNEL" {
             log::warn!("Port mapping frame ignored on {}", channel);
             return true;
         }
-        let Ok(fields) = decode_wire(raw) else { log::warn!("Port mapping frame undecodable"); return true };
-        let key = Key { session: Id::of(&fields, 1), rule: Id::of(&fields, 2), stream: Id::of(&fields, 3) };
-        let kind = fields.iter().find_map(|f| match (f.number, &f.value) { (4, WireValue::Varint(v)) => Some(*v), _ => None }).unwrap_or(SYN);
-        let payload = fields.iter().find_map(|f| match (f.number, &f.value) { (5, WireValue::Bytes(b)) => Some(*b), _ => None }).unwrap_or(&[]);
+        let Ok(fields) = decode_wire(raw) else {
+            log::warn!("Port mapping frame undecodable");
+            return true;
+        };
+        let key = Key {
+            session: Id::of(&fields, 1),
+            rule: Id::of(&fields, 2),
+            stream: Id::of(&fields, 3),
+        };
+        let kind = fields
+            .iter()
+            .find_map(|f| match (f.number, &f.value) {
+                (4, WireValue::Varint(v)) => Some(*v),
+                _ => None,
+            })
+            .unwrap_or(SYN);
+        let payload = fields
+            .iter()
+            .find_map(|f| match (f.number, &f.value) {
+                (5, WireValue::Bytes(b)) => Some(*b),
+                _ => None,
+            })
+            .unwrap_or(&[]);
         match kind {
             SYN => self.syn(key, payload),
             DATA => {
                 let writer = self.streams.lock().unwrap().get(&key).map(|s| s.0.clone());
                 match writer {
-                    Some(writer) => if writer.try_send(payload.to_vec()).is_err() {
-                        log::warn!("Port mapping write buffer full; closing stream");
-                        self.close(&key, true);
-                    },
-                    None => { let _ = self.outbound.try_send((key, FIN, Vec::new())); }
+                    Some(writer) => {
+                        if writer.try_send(payload.to_vec()).is_err() {
+                            log::warn!("Port mapping write buffer full; closing stream");
+                            self.close(&key, true);
+                        }
+                    }
+                    None => {
+                        let _ = self.outbound.try_send((key, FIN, Vec::new()));
+                    }
                 }
             }
             FIN => self.close(&key, false),
@@ -154,33 +243,64 @@ impl Session {
     }
 
     fn syn(self: &Arc<Self>, key: Key, payload: &[u8]) {
-        let request = if enabled() { parse_syn(payload) } else { Err("port mapping disabled on this host".into()) };
+        let request = if enabled() {
+            parse_syn(payload)
+        } else {
+            Err("port mapping disabled on this host".into())
+        };
         let (host, port) = match request {
             Ok(target) => target,
             Err(error) => {
                 log::info!("Port mapping SYN rejected: {}", error);
-                let _ = self.outbound.try_send((key, SYN_ACK, syn_ack(false, Some(&error))));
+                let _ = self
+                    .outbound
+                    .try_send((key, SYN_ACK, syn_ack(false, Some(&error))));
                 return;
             }
         };
         let session = self.clone();
         tokio::spawn(async move {
-            log::info!("Port mapping connecting: port={} loopback={}", port, host == "localhost" || host.starts_with("127.") || host == "::1");
-            let connected = tokio::time::timeout(CONNECT_TIMEOUT, tokio::net::TcpStream::connect((host.as_str(), port))).await;
+            log::info!(
+                "Port mapping connecting: port={} loopback={}",
+                port,
+                host == "localhost" || host.starts_with("127.") || host == "::1"
+            );
+            let connected = tokio::time::timeout(
+                CONNECT_TIMEOUT,
+                tokio::net::TcpStream::connect((host.as_str(), port)),
+            )
+            .await;
             let stream = match connected {
                 Ok(Ok(stream)) => stream,
-                Ok(Err(e)) => { session.reply_failure(key, &format!("connect failed: {}", e.kind())).await; return; }
-                Err(_) => { session.reply_failure(key, "connect timeout").await; return; }
+                Ok(Err(e)) => {
+                    session
+                        .reply_failure(key, &format!("connect failed: {}", e.kind()))
+                        .await;
+                    return;
+                }
+                Err(_) => {
+                    session.reply_failure(key, "connect timeout").await;
+                    return;
+                }
             };
             let _ = stream.set_nodelay(true);
             let (mut read, mut write) = stream.into_split();
             let (writer, mut writes) = mpsc::channel::<Vec<u8>>(WRITE_QUEUE_FRAMES);
             // SYN_ACK goes out before any DATA from the target (same ordered queue).
-            if session.outbound.send((key.clone(), SYN_ACK, syn_ack(true, None))).await.is_err() { return; }
+            if session
+                .outbound
+                .send((key.clone(), SYN_ACK, syn_ack(true, None)))
+                .await
+                .is_err()
+            {
+                return;
+            }
             log::info!("Port mapping stream open: port={}", port);
             tokio::spawn(async move {
                 while let Some(data) = writes.recv().await {
-                    if write.write_all(&data).await.is_err() { break; }
+                    if write.write_all(&data).await.is_err() {
+                        break;
+                    }
                 }
                 let _ = write.shutdown().await;
             });
@@ -189,24 +309,42 @@ impl Session {
             let (registered, wait_registered) = tokio::sync::oneshot::channel::<()>();
             let reader = tokio::spawn(async move {
                 // Start reading only once the stream is registered, so an early close finds it.
-                if wait_registered.await.is_err() { return; }
+                if wait_registered.await.is_err() {
+                    return;
+                }
                 let mut buf = vec![0u8; READ_CHUNK];
                 loop {
                     match read.read(&mut buf).await {
                         Ok(0) | Err(_) => break,
-                        Ok(n) => if reader_session.outbound.send((reader_key.clone(), DATA, buf[..n].to_vec())).await.is_err() { return; },
+                        Ok(n) => {
+                            if reader_session
+                                .outbound
+                                .send((reader_key.clone(), DATA, buf[..n].to_vec()))
+                                .await
+                                .is_err()
+                            {
+                                return;
+                            }
+                        }
                     }
                 }
                 reader_session.close(&reader_key, true);
             });
-            session.streams.lock().unwrap().insert(key, (writer, reader.abort_handle()));
+            session
+                .streams
+                .lock()
+                .unwrap()
+                .insert(key, (writer, reader.abort_handle()));
             let _ = registered.send(());
         });
     }
 
     async fn reply_failure(&self, key: Key, error: &str) {
         log::info!("Port mapping connect failed: {}", error);
-        let _ = self.outbound.send((key, SYN_ACK, syn_ack(false, Some(error)))).await;
+        let _ = self
+            .outbound
+            .send((key, SYN_ACK, syn_ack(false, Some(error))))
+            .await;
     }
 
     /// Drops the stream: the writer task shuts the target down and the reader is aborted;
@@ -215,15 +353,24 @@ impl Session {
         let removed = self.streams.lock().unwrap().remove(key);
         if let Some((_, reader)) = removed {
             reader.abort();
-            if send_fin { let _ = self.outbound.try_send((key.clone(), FIN, Vec::new())); }
+            if send_fin {
+                let _ = self.outbound.try_send((key.clone(), FIN, Vec::new()));
+            }
         }
     }
 
     /// The peer connection ended: close every target connection.
     pub fn shutdown(&self) {
         let streams: Vec<_> = self.streams.lock().unwrap().drain().collect();
-        if !streams.is_empty() { log::info!("Port mapping closed {} stream(s) with the connection", streams.len()); }
-        for (_, (_, reader)) in streams { reader.abort(); }
+        if !streams.is_empty() {
+            log::info!(
+                "Port mapping closed {} stream(s) with the connection",
+                streams.len()
+            );
+        }
+        for (_, (_, reader)) in streams {
+            reader.abort();
+        }
     }
 }
 
@@ -233,8 +380,14 @@ mod tests {
 
     #[test]
     fn syn_payload_uses_official_snake_case_keys() {
-        assert_eq!(parse_syn(br#"{"version":1,"target_host":"127.0.0.1","target_port":22}"#).unwrap(), ("127.0.0.1".into(), 22));
-        assert_eq!(parse_syn(br#"{"targetHost":"nas.local","targetPort":8080}"#).unwrap(), ("nas.local".into(), 8080));
+        assert_eq!(
+            parse_syn(br#"{"version":1,"target_host":"127.0.0.1","target_port":22}"#).unwrap(),
+            ("127.0.0.1".into(), 22)
+        );
+        assert_eq!(
+            parse_syn(br#"{"targetHost":"nas.local","targetPort":8080}"#).unwrap(),
+            ("nas.local".into(), 8080)
+        );
         assert!(parse_syn(br#"{"target_host":"","target_port":22}"#).is_err());
         assert!(parse_syn(br#"{"target_host":"h","target_port":70000}"#).is_err());
         assert!(parse_syn(b"not json").is_err());
@@ -244,23 +397,35 @@ mod tests {
     fn syn_ack_reports_ok_and_error() {
         let ok: serde_json::Value = serde_json::from_slice(&syn_ack(true, None)).unwrap();
         assert_eq!(ok, serde_json::json!({"version": 1, "ok": true}));
-        let failed: serde_json::Value = serde_json::from_slice(&syn_ack(false, Some("connect timeout"))).unwrap();
+        let failed: serde_json::Value =
+            serde_json::from_slice(&syn_ack(false, Some("connect timeout"))).unwrap();
         assert_eq!(failed["ok"], false);
         assert_eq!(failed["error"], "connect timeout");
     }
 
     #[test]
     fn frames_echo_identity_fields_with_their_wire_types() {
-        let key = Key { session: Id::Bytes(b"s1".to_vec()), rule: Id::Varint(7), stream: Id::Varint(300) };
+        let key = Key {
+            session: Id::Bytes(b"s1".to_vec()),
+            rule: Id::Varint(7),
+            stream: Id::Varint(300),
+        };
         let encoded = frame(&key, DATA, b"abc");
         let fields = decode_wire(&encoded).unwrap();
         assert_eq!(Id::of(&fields, 1), Id::Bytes(b"s1".to_vec()));
         assert_eq!(Id::of(&fields, 2), Id::Varint(7));
         assert_eq!(Id::of(&fields, 3), Id::Varint(300));
-        assert!(fields.iter().any(|f| f.number == 4 && f.value == WireValue::Varint(DATA)));
-        assert!(fields.iter().any(|f| f.number == 5 && f.value == WireValue::Bytes(b"abc")));
+        assert!(fields
+            .iter()
+            .any(|f| f.number == 4 && f.value == WireValue::Varint(DATA)));
+        assert!(fields
+            .iter()
+            .any(|f| f.number == 5 && f.value == WireValue::Bytes(b"abc")));
         // SYN is the proto3 default (0) and is omitted on the wire.
         let syn = frame(&key, SYN, b"");
-        assert!(!decode_wire(&syn).unwrap().iter().any(|f| f.number == 4 || f.number == 5));
+        assert!(!decode_wire(&syn)
+            .unwrap()
+            .iter()
+            .any(|f| f.number == 4 || f.number == 5));
     }
 }

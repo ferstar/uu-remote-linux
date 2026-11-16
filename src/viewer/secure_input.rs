@@ -341,8 +341,8 @@ fn vk_or_mac(vk: i32, mac: i32, is_mac: bool) -> i32 {
 }
 
 fn push_char(out: &mut Vec<KeyAction>, c: char, mac: bool, index: usize) -> Result<(), String> {
-    let (vk, shift) = us_qwerty_vk(c)
-        .ok_or_else(|| format!("Unsupported character at index {index}"))?;
+    let (vk, shift) =
+        us_qwerty_vk(c).ok_or_else(|| format!("Unsupported character at index {index}"))?;
     let key = if mac {
         mac_from_vk(vk).ok_or_else(|| format!("Unsupported character at index {index}"))?
     } else {
@@ -431,7 +431,10 @@ fn mac_from_vk(vk: i32) -> Option<i32> {
 }
 
 pub async fn send_actions(
-    send: impl Fn(Value) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send>>,
+    send: impl Fn(
+        Value,
+    )
+        -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send>>,
     actions: &[KeyAction],
     delay: Duration,
 ) -> Result<(), String> {

@@ -1,44 +1,106 @@
 //! Black video keeps locked Portal initialization reachable by the iPhone viewer.
-use std::time::Duration;
-use bytes::Bytes;
-use webrtc::{media::Sample, peer_connection::{RTCPeerConnection, peer_connection_state::RTCPeerConnectionState}};
 use crate::{capture_setting::VideoCodec, desktop_session::PortalDesktop, video_track::VideoTrack};
+use bytes::Bytes;
+use std::time::Duration;
+use webrtc::{
+    media::Sample,
+    peer_connection::{peer_connection_state::RTCPeerConnectionState, RTCPeerConnection},
+};
 
 async fn black_frame(codec: VideoCodec) -> Result<Bytes, String> {
     #[cfg(feature = "inproc-av")]
-    if crate::video::native_engine_eligible(crate::video_select::selection().encoder, crate::video::NativeDisplayKind::Portal) {
+    if crate::video::native_engine_eligible(
+        crate::video_select::selection().encoder,
+        crate::video::NativeDisplayKind::Portal,
+    ) {
         match tokio::task::spawn_blocking(move || crate::inproc_encoder::black_frame(codec)).await {
             Ok(Ok(frame)) => return Ok(frame),
-            Ok(Err(error)) => log::warn!("Locked video in-process VAAPI unavailable: {error}; falling back to FFmpeg"),
+            Ok(Err(error)) => log::warn!(
+                "Locked video in-process VAAPI unavailable: {error}; falling back to FFmpeg"
+            ),
             Err(_) => log::warn!("Locked video in-process worker failed; falling back to FFmpeg"),
         }
     }
     let mut command = crate::video::ffmpeg_command();
-    command.args(["-hide_banner", "-loglevel", "error", "-nostdin",
-        "-f", "lavfi", "-i", "color=c=black:s=1280x720:r=1", "-frames:v", "1",
-        "-an", "-pix_fmt", "yuv420p", "-threads", "1", "-preset", "ultrafast", "-tune", "zerolatency"]);
+    command.args([
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-nostdin",
+        "-f",
+        "lavfi",
+        "-i",
+        "color=c=black:s=1280x720:r=1",
+        "-frames:v",
+        "1",
+        "-an",
+        "-pix_fmt",
+        "yuv420p",
+        "-threads",
+        "1",
+        "-preset",
+        "ultrafast",
+        "-tune",
+        "zerolatency",
+    ]);
     match codec {
-        VideoCodec::H264 => { command.args(["-c:v", "libx264", "-profile:v", "baseline",
-            "-x264-params", "keyint=1:repeat-headers=1:aud=1", "-f", "h264"]); },
-        VideoCodec::H265 => { command.args(["-c:v", "libx265",
-            "-x265-params", "keyint=1:repeat-headers=1:aud=1:pools=1:frame-threads=1:log-level=error", "-f", "hevc"]); },
+        VideoCodec::H264 => {
+            command.args([
+                "-c:v",
+                "libx264",
+                "-profile:v",
+                "baseline",
+                "-x264-params",
+                "keyint=1:repeat-headers=1:aud=1",
+                "-f",
+                "h264",
+            ]);
+        }
+        VideoCodec::H265 => {
+            command.args([
+                "-c:v",
+                "libx265",
+                "-x265-params",
+                "keyint=1:repeat-headers=1:aud=1:pools=1:frame-threads=1:log-level=error",
+                "-f",
+                "hevc",
+            ]);
+        }
     }
     command.arg("pipe:1").kill_on_drop(true);
-    let output = tokio::time::timeout(Duration::from_secs(5), command.output()).await
+    let output = tokio::time::timeout(Duration::from_secs(5), command.output())
+        .await
         .map_err(|_| "Locked desktop video encoder timed out".to_string())?
         .map_err(|error| format!("Locked desktop video encoder: {error}"))?;
     if !output.status.success() || output.stdout.is_empty() {
-        return Err(format!("Locked desktop video encoder failed: status={}", output.status));
+        return Err(format!(
+            "Locked desktop video encoder failed: status={}",
+            output.status
+        ));
     }
     Ok(output.stdout.into())
 }
 
-pub async fn run(pc: &RTCPeerConnection, track: &VideoTrack, desktop: &PortalDesktop, selection: crate::video_select::Selection) -> Result<(), String> {
+pub async fn run(
+    pc: &RTCPeerConnection,
+    track: &VideoTrack,
+    desktop: &PortalDesktop,
+    selection: crate::video_select::Selection,
+) -> Result<(), String> {
     run_with_encoder(pc, track, desktop, selection, black_frame).await
 }
 
-async fn run_with_encoder<F, Fut>(pc: &RTCPeerConnection, track: &VideoTrack, desktop: &PortalDesktop, selection: crate::video_select::Selection, mut encode: F) -> Result<(), String>
-where F: FnMut(VideoCodec) -> Fut, Fut: std::future::Future<Output = Result<Bytes, String>> {
+async fn run_with_encoder<F, Fut>(
+    pc: &RTCPeerConnection,
+    track: &VideoTrack,
+    desktop: &PortalDesktop,
+    selection: crate::video_select::Selection,
+    mut encode: F,
+) -> Result<(), String>
+where
+    F: FnMut(VideoCodec) -> Fut,
+    Fut: std::future::Future<Output = Result<Bytes, String>>,
+{
     // #29: iPhone 4.42.0 cold ON/OFF/ON tests only sent action15 after black video.
     // Keep CONTROL permissions truthful and use the existing video track until real capture is ready.
     let mut updates = desktop.subscribe();
@@ -52,7 +114,9 @@ where F: FnMut(VideoCodec) -> Fut, Fut: std::future::Future<Output = Result<Byte
         let state = updates.borrow_and_update().clone();
         let _ = locked.borrow_and_update();
         if state.ready() || !state.waiting || crate::video::transport_closed(pc) {
-            if attempts > 0 { log::info!("Locked desktop video ended: sent={sent} attempts={attempts}"); }
+            if attempts > 0 {
+                log::info!("Locked desktop video ended: sent={sent} attempts={attempts}");
+            }
             return Ok(());
         }
         tokio::select! {
@@ -96,7 +160,7 @@ where F: FnMut(VideoCodec) -> Fut, Fut: std::future::Future<Output = Result<Byte
                 attempts += 1;
                 if track.revision() > revision { sent += 1; }
                 tick.reset();
-                if attempts == 1 || attempts % 10 == 0 {
+                if attempts == 1 || attempts.is_multiple_of(10) {
                     log::info!("Locked desktop video: sent={sent} codec={codec:?} synthetic_size=1280x720 bytes={} attempts={attempts}", data.len());
                 }
             },

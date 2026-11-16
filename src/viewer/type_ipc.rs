@@ -94,9 +94,11 @@ pub fn runtime_dir() -> Result<PathBuf, String> {
                 unsafe { libc::getuid() }
             ))
         });
-    let dir = if base.ends_with("uu-viewer-type") || base.file_name().is_some_and(|n| {
-        n.to_string_lossy().starts_with("uu-viewer-type")
-    }) {
+    let dir = if base.ends_with("uu-viewer-type")
+        || base
+            .file_name()
+            .is_some_and(|n| n.to_string_lossy().starts_with("uu-viewer-type"))
+    {
         base
     } else {
         base.join("uu-viewer-type")
@@ -142,9 +144,7 @@ pub async fn read_frame(r: &mut (impl AsyncRead + Unpin)) -> Result<Vec<u8>, Str
         return Err("Type IPC frame exceeds size limit".into());
     }
     let mut b = vec![0; n];
-    r.read_exact(&mut b)
-        .await
-        .map_err(|_| "Type IPC closed")?;
+    r.read_exact(&mut b).await.map_err(|_| "Type IPC closed")?;
     Ok(b)
 }
 
@@ -196,7 +196,10 @@ impl Server {
         let listener = UnixListener::bind(&path).map_err(|_| "Cannot bind type IPC socket")?;
         use std::os::unix::fs::PermissionsExt;
         let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
-        Ok(Self { path, listener: Some(listener) })
+        Ok(Self {
+            path,
+            listener: Some(listener),
+        })
     }
 
     /// Accept connections and forward validated TypeRequests to `tx`.
@@ -259,7 +262,10 @@ async fn serve_client(mut stream: UnixStream, tx: mpsc::Sender<PendingType>) -> 
 }
 
 /// Client: deliver a type request to a running viewer. Returns response or connection error.
-pub async fn send_to_viewer(device: &str, mut request: TypeRequest) -> Result<TypeResponse, String> {
+pub async fn send_to_viewer(
+    device: &str,
+    mut request: TypeRequest,
+) -> Result<TypeResponse, String> {
     let path = socket_path(device)?;
     let mut stream = UnixStream::connect(&path)
         .await
@@ -335,10 +341,9 @@ pub fn write_png_rgb(
     } else {
         opts.create(true).truncate(true);
     }
-    let mut file = opts
-        .open(path)
+    let mut file = opts.open(path).map_err(|_| "Cannot write snapshot file")?;
+    file.write_all(&png)
         .map_err(|_| "Cannot write snapshot file")?;
-    file.write_all(&png).map_err(|_| "Cannot write snapshot file")?;
     Ok(())
 }
 
@@ -381,7 +386,14 @@ mod tests {
     fn png_roundtrip_header_and_mode() {
         let dir = tempfile_dir();
         let path = dir.join("t.png");
-        write_png_rgb(&path, 2, 2, &[255, 0, 0, 0, 255, 0, 0, 0, 255, 255, 255, 255], true).unwrap();
+        write_png_rgb(
+            &path,
+            2,
+            2,
+            &[255, 0, 0, 0, 255, 0, 0, 0, 255, 255, 255, 255],
+            true,
+        )
+        .unwrap();
         let meta = std::fs::metadata(&path).unwrap();
         use std::os::unix::fs::PermissionsExt;
         assert_eq!(meta.permissions().mode() & 0o777, 0o600);
@@ -394,13 +406,13 @@ mod tests {
         use std::os::unix::fs::DirBuilderExt;
         // One directory per call: tests run in parallel and must not remove each other's files.
         static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
-        let dir = std::env::temp_dir().join(format!("uu-type-ipc-test-{}-{}", std::process::id(),
-            NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)));
+        let dir = std::env::temp_dir().join(format!(
+            "uu-type-ipc-test-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        ));
         let _ = std::fs::remove_dir_all(&dir);
-        std::fs::DirBuilder::new()
-            .mode(0o700)
-            .create(&dir)
-            .unwrap();
+        std::fs::DirBuilder::new().mode(0o700).create(&dir).unwrap();
         dir
     }
 
@@ -408,7 +420,9 @@ mod tests {
     async fn server_client_roundtrip_and_uid_gate() {
         let device = format!("ipc-test-{}", uuidish());
         // XDG_RUNTIME_DIR is process-wide; another test points it at a planted directory.
-        let _env = crate::viewer::secure_input::ENV_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _env = crate::viewer::secure_input::ENV_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let server = Server::bind(&device).await.unwrap();
         let path = server.path.clone();
         let (tx, mut rx) = mpsc::channel::<PendingType>(4);
@@ -469,7 +483,9 @@ mod tests {
     async fn oversized_frame_rejected() {
         let device = format!("oversize-{}", uuidish());
         // XDG_RUNTIME_DIR is process-wide; another test points it at a planted directory.
-        let _env = crate::viewer::secure_input::ENV_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _env = crate::viewer::secure_input::ENV_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let server = Server::bind(&device).await.unwrap();
         let path = server.path.clone();
         let (tx, mut rx) = mpsc::channel::<PendingType>(1);
@@ -495,16 +511,25 @@ mod tests {
             uuidish()
         ));
         let _ = std::fs::remove_dir_all(&base);
-        std::fs::DirBuilder::new().mode(0o700).create(&base).unwrap();
+        std::fs::DirBuilder::new()
+            .mode(0o700)
+            .create(&base)
+            .unwrap();
 
         let open = base.join("open");
-        std::fs::DirBuilder::new().mode(0o755).create(&open).unwrap();
+        std::fs::DirBuilder::new()
+            .mode(0o755)
+            .create(&open)
+            .unwrap();
         let err = validate_private_dir(&open).unwrap_err();
         assert!(err.contains("permissions"), "{err}");
         assert!(!err.contains("sentinel"));
 
         let good = base.join("good");
-        std::fs::DirBuilder::new().mode(0o700).create(&good).unwrap();
+        std::fs::DirBuilder::new()
+            .mode(0o700)
+            .create(&good)
+            .unwrap();
         validate_private_dir(&good).unwrap();
 
         let link = base.join("link");
@@ -531,18 +556,27 @@ mod tests {
             uuidish()
         ));
         let _ = std::fs::remove_dir_all(&base);
-        std::fs::DirBuilder::new().mode(0o700).create(&base).unwrap();
+        std::fs::DirBuilder::new()
+            .mode(0o700)
+            .create(&base)
+            .unwrap();
 
         // Point XDG_RUNTIME_DIR at a private base; plant a bad uu-viewer-type child.
         let child = base.join("uu-viewer-type");
-        std::fs::DirBuilder::new().mode(0o755).create(&child).unwrap();
+        std::fs::DirBuilder::new()
+            .mode(0o755)
+            .create(&child)
+            .unwrap();
         let _guard = EnvGuard::set("XDG_RUNTIME_DIR", base.to_str().unwrap());
         let err = runtime_dir().unwrap_err();
         assert!(err.contains("permissions"), "{err}");
         let _ = std::fs::remove_dir_all(&child);
 
         let target = base.join("target");
-        std::fs::DirBuilder::new().mode(0o700).create(&target).unwrap();
+        std::fs::DirBuilder::new()
+            .mode(0o700)
+            .create(&target)
+            .unwrap();
         std::os::unix::fs::symlink(&target, &child).unwrap();
         let err = runtime_dir().unwrap_err();
         assert!(err.contains("symlink"), "{err}");
@@ -562,14 +596,7 @@ mod tests {
         let link = dir.join("link.png");
         std::fs::write(&real, b"old").unwrap();
         std::os::unix::fs::symlink(&real, &link).unwrap();
-        let err = write_png_rgb(
-            &link,
-            1,
-            1,
-            &[1, 2, 3],
-            false,
-        )
-        .unwrap_err();
+        let err = write_png_rgb(&link, 1, 1, &[1, 2, 3], false).unwrap_err();
         assert!(err.contains("Cannot write snapshot"), "{err}");
         // Original untouched
         assert_eq!(std::fs::read(&real).unwrap(), b"old");
@@ -596,7 +623,10 @@ mod tests {
             secret: "sentinel-SECRET-9f3a".into(),
         };
         let d = format!("{req:?}");
-        assert!(d.contains("secret_len: 20") || d.contains("secret_len: 20,"), "{d}");
+        assert!(
+            d.contains("secret_len: 20") || d.contains("secret_len: 20,"),
+            "{d}"
+        );
         assert!(!d.contains("sentinel"));
         assert!(!d.contains("SECRET"));
         assert!(!d.contains("9f3a"));
@@ -622,7 +652,7 @@ mod tests {
         }
     }
 
-        fn uuidish() -> String {
+    fn uuidish() -> String {
         format!(
             "{:x}",
             std::time::SystemTime::now()

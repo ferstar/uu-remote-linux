@@ -6,13 +6,26 @@ pub(crate) struct FramePacing {
     last_sent: Option<Instant>,
 }
 impl FramePacing {
-    pub(crate) fn new(dynamic: bool) -> Self { Self { dynamic, last_sent: None } }
-    pub(crate) fn wait_for_damage(&self) -> bool { self.dynamic && self.last_sent.is_some() }
-    pub(crate) fn has_frame(&self) -> bool { self.last_sent.is_some() }
-    pub(crate) fn keepalive_due(&self, now: Instant, idr: bool) -> bool {
-        self.last_sent.is_some_and(|sent| idr || now.saturating_duration_since(sent) >= Duration::from_secs(1))
+    pub(crate) fn new(dynamic: bool) -> Self {
+        Self {
+            dynamic,
+            last_sent: None,
+        }
     }
-    pub(crate) fn sent(&mut self, now: Instant) { self.last_sent = Some(now); }
+    pub(crate) fn wait_for_damage(&self) -> bool {
+        self.dynamic && self.last_sent.is_some()
+    }
+    pub(crate) fn has_frame(&self) -> bool {
+        self.last_sent.is_some()
+    }
+    pub(crate) fn keepalive_due(&self, now: Instant, idr: bool) -> bool {
+        self.last_sent.is_some_and(|sent| {
+            idr || now.saturating_duration_since(sent) >= Duration::from_secs(1)
+        })
+    }
+    pub(crate) fn sent(&mut self, now: Instant) {
+        self.last_sent = Some(now);
+    }
 }
 
 /// Protocol readiness retries do not consume a frame-rate slot. Idle damage
@@ -25,14 +38,24 @@ pub(crate) struct CaptureSchedule {
 }
 impl CaptureSchedule {
     pub(crate) fn new(now: Instant, fps: u32) -> Self {
-        Self { interval: Duration::from_nanos(1_000_000_000 / u64::from(fps.max(1))),
-            frame_deadline: now, attempt: now, retries: 0 }
+        Self {
+            interval: Duration::from_nanos(1_000_000_000 / u64::from(fps.max(1))),
+            frame_deadline: now,
+            attempt: now,
+            retries: 0,
+        }
     }
-    pub(crate) fn deadline(&self) -> Instant { self.attempt }
+    pub(crate) fn deadline(&self) -> Instant {
+        self.attempt
+    }
     pub(crate) fn completed(&mut self, now: Instant, encoded: bool) {
         if encoded {
             let next = self.frame_deadline + self.interval;
-            self.frame_deadline = if next <= now { now + self.interval } else { next };
+            self.frame_deadline = if next <= now {
+                now + self.interval
+            } else {
+                next
+            };
             self.attempt = self.frame_deadline;
             self.retries = 0;
         } else {
@@ -57,10 +80,17 @@ mod tests {
                     let now = schedule.deadline();
                     let ready = *pending.get_or_insert(now + Duration::from_millis(latency));
                     let sent = now >= ready;
-                    if sent { encoded.push(now); pending = None; }
+                    if sent {
+                        encoded.push(now);
+                        pending = None;
+                    }
                     schedule.completed(now, sent);
                 }
-                assert_eq!(encoded.len(), fps as usize, "async capture latency={latency}ms");
+                assert_eq!(
+                    encoded.len(),
+                    fps as usize,
+                    "async capture latency={latency}ms"
+                );
                 assert!(encoded.windows(2).all(|w| w[1] > w[0]));
             }
         }
