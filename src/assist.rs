@@ -247,7 +247,7 @@ impl LocalUi {
             return Err("assist output is not a terminal".into());
         }
         Ok(Self::Tty(
-            tokio::io::unix::AsyncFd::new(tty)
+            unsafe { tokio::io::unix::AsyncFd::register(tty) }
                 .map_err(|_| "assist terminal registration failed")?,
         ))
     }
@@ -929,7 +929,7 @@ mod tests {
         unsafe {
             libc::fcntl(slave.as_raw_fd(), libc::F_SETFL, libc::O_NONBLOCK);
         }
-        let ui = LocalUi::Tty(tokio::io::unix::AsyncFd::new(slave).unwrap());
+        let ui = LocalUi::Tty(unsafe { tokio::io::unix::AsyncFd::register(slave) }.unwrap());
         let mut master = std::fs::File::from(pair.master);
         ui.show(
             "fixture-123",

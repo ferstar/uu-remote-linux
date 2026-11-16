@@ -10,4 +10,4 @@ echo "[pre-commit] Checking formatting (cargo fmt --check)..."
 cargo fmt --all -- --check
 
 echo "[pre-commit] Running clippy (cargo clippy -- -D warnings)..."
-cargo clippy --features wayland,inproc-av --all-targets -- -D warnings
+cargo clippy --features wayland,inproc-av --all-targets --no-deps -- -D warnings
