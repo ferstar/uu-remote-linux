@@ -704,7 +704,7 @@ fn encode_x264_inner(
                 latencies.clear();
             }
             if units
-                .blocking_send(EncodedUnit { data, permit: frame.permit, completed_at })
+                .blocking_send(EncodedUnit { data, is_new: true, permit: frame.permit, completed_at })
                 .is_err()
             {
                 return Ok(());
@@ -941,7 +941,7 @@ fn run_portal_vaapi(
         if now < next_poll { continue; }
         next_poll = (next_poll + interval).max(now);
         if portal.size() != config.input { return Err("Portal size changed; restart encoder".into()); }
-        let Some(permit) = acquire(&budget, &units) else { return Ok(()); };
+        let Some(permit) = acquire(&budget, &units, &tokio::runtime::Handle::current()) else { return Ok(()); };
         if stop.load(Ordering::Relaxed) { return Ok(()); }
         let due = last_send.elapsed() >= keepalive || idr.load(Ordering::Acquire);
         let mut is_new_frame = true;
@@ -1964,7 +1964,7 @@ fn run_wayland_vaapi(
         let mut encoded = false;
         if let Some(data) = packet {
             if !data.is_empty() {
-                if units.blocking_send(EncodedUnit {data,permit,completed_at:Instant::now()}).is_err() { return Ok(()); }
+                if units.blocking_send(EncodedUnit {data,is_new:captured,permit,completed_at:Instant::now()}).is_err() { return Ok(()); }
                 pacing.sent(Instant::now());
                 encoded = true;
             }

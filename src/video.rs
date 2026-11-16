@@ -1390,7 +1390,7 @@ pub async fn stream_desktop_at(pc: Arc<RTCPeerConnection>, track: Arc<crate::vid
                 max_age_ms = max_age_ms.max(frame.completed_at.elapsed().as_millis());
                 // Continue monitoring close even if the network send stalls.
                 let sample = Sample {
-                    data: frame.data.clone(), duration, ..Default::default()
+                    data: frame.data.clone(), ..Default::default()
                 };
                 // Official GameViewer (streamer.dll) negotiates WebRTC-VideoIsNewFrame/Enabled and tracks
                 // both `frames` and `newFrames`/`newFramesPerSecond`. Static repeat/keepalive frames are
